@@ -1,0 +1,42 @@
+services:
+  wazo-stt:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wazo-stt-server:latest
+    container_name: wazo-stt-server
+    ports:
+      - "8000:8000"
+    volumes:
+      - models:/models
+    environment:
+      - MODEL_PATH=/models/parakeet
+      - HOST=0.0.0.0
+      - PORT=8000
+      - RUST_LOG=info
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  model-downloader:
+    image: curlimages/curl:latest
+    container_name: model-downloader
+    volumes:
+      - models:/models
+      - ./scripts:/scripts:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apk add --no-cache bash
+        export MODEL_PATH=/models/parakeet
+        /scripts/download-model.sh
+    profiles:
+      - setup
+
+volumes:
+  models:
+    name: wazo-stt-models

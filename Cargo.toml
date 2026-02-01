@@ -1,0 +1,40 @@
+[package]
+name = "wazo-stt-server"
+version = "0.1.0"
+edition = "2021"
+description = "OpenAI Whisper-compatible ASR server using Parakeet model"
+license = "MIT"
+
+[dependencies]
+# Web framework
+axum = { version = "0.7", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Transcription engine
+transcribe-rs = { version = "0.1", features = ["parakeet"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Audio processing
+hound = "3.5"
+symphonia = { version = "0.5", features = ["mp3", "ogg", "flac", "wav", "pcm"] }
+
+# Utilities
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
+
+# Environment
+dotenvy = "0.15"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
