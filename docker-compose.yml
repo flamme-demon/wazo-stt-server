@@ -42,7 +42,7 @@ services:
         mkdir -p "$$MODEL_DIR"
 
         # Check if model already exists
-        if [ -f "$$MODEL_DIR/encoder.onnx" ]; then
+        if [ -f "$$MODEL_DIR/encoder-model.int8.onnx" ]; then
           echo "Model already downloaded."
           ls -lh "$$MODEL_DIR"
           exit 0
@@ -58,11 +58,16 @@ services:
         echo "Extracting model..."
         tar -xzf parakeet-v3-int8.tar.gz
 
-        # Move files to correct location if needed
-        if [ -d "/models/parakeet-v3-int8" ]; then
-          mv /models/parakeet-v3-int8/* "$$MODEL_DIR/" 2>/dev/null || true
-          rm -rf /models/parakeet-v3-int8
+        # Find and move extracted files to correct location
+        EXTRACTED_DIR=$$(find /models -maxdepth 1 -type d -name "parakeet*" ! -name "parakeet" | head -1)
+        if [ -n "$$EXTRACTED_DIR" ] && [ "$$EXTRACTED_DIR" != "$$MODEL_DIR" ]; then
+          echo "Moving files from $$EXTRACTED_DIR to $$MODEL_DIR"
+          mv "$$EXTRACTED_DIR"/* "$$MODEL_DIR/" 2>/dev/null || true
+          rm -rf "$$EXTRACTED_DIR"
         fi
+
+        # Clean up macOS metadata files
+        rm -f "$$MODEL_DIR"/._*
 
         rm -f parakeet-v3-int8.tar.gz
 
