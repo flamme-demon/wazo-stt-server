@@ -1102,6 +1102,11 @@ fn parse_wav_samples(data: &[u8]) -> Result<Vec<f32>> {
     let mut reader = hound::WavReader::new(cursor).context("Failed to parse WAV")?;
 
     let spec = reader.spec();
+    info!(
+        "WAV spec: sample_rate={}, channels={}, bits_per_sample={}, format={:?}",
+        spec.sample_rate, spec.channels, spec.bits_per_sample, spec.sample_format
+    );
+
     let samples: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Int => {
             let max_val = (1 << (spec.bits_per_sample - 1)) as f32;
@@ -1126,8 +1131,15 @@ fn parse_wav_samples(data: &[u8]) -> Result<Vec<f32>> {
 
     // Resample to 16kHz if needed
     let samples = if spec.sample_rate != 16000 {
+        info!(
+            "Resampling WAV from {}Hz to 16000Hz: {} -> {} samples",
+            spec.sample_rate,
+            samples.len(),
+            (samples.len() as f64 * 16000.0 / spec.sample_rate as f64) as usize
+        );
         resample(&samples, spec.sample_rate, 16000)
     } else {
+        info!("WAV already at 16000Hz, no resampling needed");
         samples
     };
 
