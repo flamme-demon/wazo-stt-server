@@ -27,6 +27,7 @@ symphonia = { version = "0.5", features = ["mp3", "ogg", "flac", "wav", "pcm"] }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
 
 # Environment
 dotenvy = "0.15"
