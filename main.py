@@ -74,7 +74,7 @@ class Job:
 jobs: dict[str, Job] = {}
 job_queue: deque[str] = deque()
 job_queue_condition: asyncio.Condition = None
-model: onnx_asr.Model = None
+model = None  # onnx_asr model instance
 db_lock: asyncio.Lock = None
 
 
