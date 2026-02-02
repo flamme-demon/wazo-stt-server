@@ -6,7 +6,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use parakeet_rs::{Parakeet, TimestampMode, Transcriber};
+use parakeet_rs::{ParakeetTDT, TimestampMode, Transcriber};
 use serde::{Deserialize, Serialize};
 use std::{env, path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
@@ -20,7 +20,7 @@ const MAX_UPLOAD_SIZE: usize = 100 * 1024 * 1024; // 100MB
 
 #[derive(Clone)]
 struct AppState {
-    engine: Arc<Mutex<Option<Parakeet>>>,
+    engine: Arc<Mutex<Option<ParakeetTDT>>>,
     model_path: PathBuf,
 }
 
@@ -221,8 +221,8 @@ async fn transcribe(
 
         // Initialize engine if not already done
         if engine_guard.is_none() {
-            info!("Loading Parakeet model from {:?}", state.model_path);
-            match Parakeet::from_pretrained(state.model_path.to_str().unwrap_or("."), None) {
+            info!("Loading Parakeet TDT model from {:?}", state.model_path);
+            match ParakeetTDT::from_pretrained(state.model_path.to_str().unwrap_or("."), None) {
                 Ok(engine) => *engine_guard = Some(engine),
                 Err(e) => {
                     return create_error_response(&format!("Failed to load model: {}", e))
