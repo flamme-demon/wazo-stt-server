@@ -443,6 +443,56 @@ async fn list_models() -> Json<ModelsResponse> {
     })
 }
 
+async fn fetch_audio_from_url(url: &str) -> Result<(Vec<u8>, String)> {
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true) // For self-signed certs in dev environments
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .context("Failed to create HTTP client")?;
+
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .context("Failed to fetch URL")?;
+
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "HTTP error {}: {}",
+            response.status().as_u16(),
+            response.status().canonical_reason().unwrap_or("Unknown")
+        );
+    }
+
+    // Try to get filename from Content-Disposition header or URL
+    let filename = response
+        .headers()
+        .get("content-disposition")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| {
+            s.split("filename=")
+                .nth(1)
+                .map(|f| f.trim_matches('"').to_string())
+        })
+        .or_else(|| {
+            url.split('/')
+                .last()
+                .and_then(|s| s.split('?').next())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "audio.wav".to_string());
+
+    let bytes = response
+        .bytes()
+        .await
+        .context("Failed to read response body")?;
+
+    info!("Fetched {} bytes from URL, filename: {}", bytes.len(), filename);
+
+    Ok((bytes.to_vec(), filename))
+}
+
 async fn lookup_transcription(
     State(state): State<AppState>,
     Query(query): Query<LookupQuery>,
@@ -489,6 +539,7 @@ async fn submit_transcription(
 ) -> axum::response::Response {
     let mut audio_data: Option<Vec<u8>> = None;
     let mut original_filename: Option<String> = None;
+    let mut audio_url: Option<String> = None;
     let mut user_uuid: Option<String> = None;
     let mut message_id: Option<String> = None;
     let mut params = TranscriptionParams::default();
@@ -505,6 +556,11 @@ async fn submit_transcription(
                         return create_error_response(&format!("Failed to read file: {}", e))
                             .into_response()
                     }
+                }
+            }
+            "url" => {
+                if let Ok(value) = field.text().await {
+                    audio_url = Some(value);
                 }
             }
             "user_uuid" => {
@@ -583,11 +639,23 @@ async fn submit_transcription(
         }
     }
 
-    let audio_data = match audio_data {
-        Some(data) => data,
-        None => return create_error_response("No audio file provided").into_response(),
+    // Get audio data from file upload or URL
+    let (audio_data, filename) = if let Some(data) = audio_data {
+        let filename = original_filename.unwrap_or_else(|| "audio.wav".to_string());
+        (data, filename)
+    } else if let Some(url) = audio_url {
+        info!("Fetching audio from URL: {}", url);
+        match fetch_audio_from_url(&url).await {
+            Ok((data, filename)) => (data, filename),
+            Err(e) => {
+                error!("Failed to fetch audio from URL: {}", e);
+                return create_error_response(&format!("Failed to fetch audio from URL: {}", e))
+                    .into_response();
+            }
+        }
+    } else {
+        return create_error_response("No audio file or URL provided").into_response();
     };
-    let filename = original_filename.unwrap_or_else(|| "audio.wav".to_string());
 
     // Check queue size
     {
