@@ -93,7 +93,7 @@ Voir [API.md](API.md) pour la documentation complète de l'API.
 
 | Variable | Défaut | Description |
 |----------|--------|-------------|
-| `MODEL_NAME` | `nemo-parakeet-tdt-0.6b-v2` | Nom du modèle onnx_asr |
+| `MODEL_NAME` | `nemo-parakeet-tdt-0.6b-v3` | Nom du modèle onnx_asr |
 | `DB_PATH` | `/data/transcriptions.db` | Chemin de la base SQLite |
 | `HOST` | `0.0.0.0` | Adresse de bind |
 | `PORT` | `8000` | Port du serveur |

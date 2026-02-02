@@ -27,7 +27,7 @@ from pydub import AudioSegment
 from pydub.effects import normalize
 
 # Configuration
-MODEL_NAME = os.getenv("MODEL_NAME", "nemo-parakeet-tdt-0.6b-v2")
+MODEL_NAME = os.getenv("MODEL_NAME", "nemo-parakeet-tdt-0.6b-v3")
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
 DB_PATH = os.getenv("DB_PATH", "/data/transcriptions.db")

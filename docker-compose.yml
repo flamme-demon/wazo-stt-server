@@ -11,7 +11,7 @@ services:
       - data:/data
       - model-cache:/root/.cache
     environment:
-      - MODEL_NAME=nemo-parakeet-tdt-0.6b-v2
+      - MODEL_NAME=nemo-parakeet-tdt-0.6b-v3
       - DB_PATH=/data/transcriptions.db
       - HOST=0.0.0.0
       - PORT=8000
