@@ -6,19 +6,12 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use parakeet_rs::{Parakeet, TimestampMode, Transcriber};
 use serde::{Deserialize, Serialize};
-use std::{
-    env,
-    io::Write,
-    path::PathBuf,
-    sync::Arc,
-};
-use tempfile::NamedTempFile;
+use std::{env, path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing::{error, info};
-use transcribe_rs::{TranscriptionEngine, engines::parakeet::ParakeetEngine};
-use uuid::Uuid;
+use tracing::info;
 
 const DEFAULT_MODEL_PATH: &str = "/models/parakeet";
 const DEFAULT_HOST: &str = "0.0.0.0";
@@ -27,7 +20,7 @@ const MAX_UPLOAD_SIZE: usize = 100 * 1024 * 1024; // 100MB
 
 #[derive(Clone)]
 struct AppState {
-    engine: Arc<Mutex<ParakeetEngine>>,
+    engine: Arc<Mutex<Option<Parakeet>>>,
     model_path: PathBuf,
 }
 
@@ -134,7 +127,7 @@ async fn list_models() -> Json<ModelsResponse> {
         object: "list".to_string(),
         data: vec![
             ModelInfo {
-                id: "parakeet".to_string(),
+                id: "parakeet-tdt".to_string(),
                 object: "model".to_string(),
                 created: 1699000000,
                 owned_by: "nvidia".to_string(),
@@ -176,38 +169,33 @@ async fn transcribe(
                 );
             }
             "model" => {
-                let value = field
-                    .text()
-                    .await
-                    .map_err(|e| create_error_response(&format!("Failed to read model: {}", e)))?;
+                let value = field.text().await.map_err(|e| {
+                    create_error_response(&format!("Failed to read model: {}", e))
+                })?;
                 params.model = Some(value);
             }
             "language" => {
-                let value = field
-                    .text()
-                    .await
-                    .map_err(|e| create_error_response(&format!("Failed to read language: {}", e)))?;
+                let value = field.text().await.map_err(|e| {
+                    create_error_response(&format!("Failed to read language: {}", e))
+                })?;
                 params.language = Some(value);
             }
             "prompt" => {
-                let value = field
-                    .text()
-                    .await
-                    .map_err(|e| create_error_response(&format!("Failed to read prompt: {}", e)))?;
+                let value = field.text().await.map_err(|e| {
+                    create_error_response(&format!("Failed to read prompt: {}", e))
+                })?;
                 params.prompt = Some(value);
             }
             "response_format" => {
-                let value = field
-                    .text()
-                    .await
-                    .map_err(|e| create_error_response(&format!("Failed to read response_format: {}", e)))?;
+                let value = field.text().await.map_err(|e| {
+                    create_error_response(&format!("Failed to read response_format: {}", e))
+                })?;
                 params.response_format = Some(value);
             }
             "temperature" => {
-                let value = field
-                    .text()
-                    .await
-                    .map_err(|e| create_error_response(&format!("Failed to read temperature: {}", e)))?;
+                let value = field.text().await.map_err(|e| {
+                    create_error_response(&format!("Failed to read temperature: {}", e))
+                })?;
                 params.temperature = value.parse().ok();
             }
             _ => {}
@@ -224,26 +212,34 @@ async fn transcribe(
         params.model
     );
 
-    let temp_file = save_and_convert_audio(&audio_data, &filename)
+    // Convert audio to required format
+    let samples = convert_to_samples(&audio_data, &filename)
         .await
         .map_err(|e| create_error_response(&format!("Failed to process audio: {}", e)))?;
 
-    let temp_path = temp_file.path().to_path_buf();
+    // Transcribe
+    let result = {
+        let mut engine_guard = state.engine.lock().await;
 
-    let text = {
-        let mut engine = state.engine.lock().await;
+        // Initialize engine if not already done
+        if engine_guard.is_none() {
+            info!("Loading Parakeet model from {:?}", state.model_path);
+            let engine = Parakeet::from_pretrained(
+                state.model_path.to_str().unwrap_or("."),
+                None,
+            )
+            .map_err(|e| create_error_response(&format!("Failed to load model: {}", e)))?;
+            *engine_guard = Some(engine);
+        }
+
+        let engine = engine_guard.as_mut().unwrap();
 
         engine
-            .load_model(&state.model_path)
-            .map_err(|e| create_error_response(&format!("Failed to load model: {}", e)))?;
-
-        let result = engine
-            .transcribe_file(&temp_path, None)
-            .map_err(|e| create_error_response(&format!("Transcription failed: {}", e)))?;
-
-        result.text
+            .transcribe_samples(&samples, 16000, 1, Some(TimestampMode::Segments))
+            .map_err(|e| create_error_response(&format!("Transcription failed: {}", e)))?
     };
 
+    let text = result.text.clone();
     info!("Transcription completed: {} characters", text.len());
 
     let response_format = params.response_format.as_deref().unwrap_or("json");
@@ -251,72 +247,126 @@ async fn transcribe(
     match response_format {
         "text" => Ok((StatusCode::OK, text).into_response()),
         "verbose_json" => {
-            let response = VerboseTranscriptionResponse {
-                task: "transcribe".to_string(),
-                language: params.language.unwrap_or_else(|| "en".to_string()),
-                duration: 0.0,
-                text: text.clone(),
-                segments: vec![Segment {
-                    id: 0,
+            let segments: Vec<Segment> = result
+                .tokens
+                .iter()
+                .enumerate()
+                .map(|(i, token)| Segment {
+                    id: i as i32,
                     seek: 0,
-                    start: 0.0,
-                    end: 0.0,
-                    text,
+                    start: token.start as f64,
+                    end: token.end as f64,
+                    text: token.text.clone(),
                     tokens: vec![],
                     temperature: params.temperature.unwrap_or(0.0),
                     avg_logprob: 0.0,
                     compression_ratio: 0.0,
                     no_speech_prob: 0.0,
-                }],
+                })
+                .collect();
+
+            let response = VerboseTranscriptionResponse {
+                task: "transcribe".to_string(),
+                language: params.language.unwrap_or_else(|| "en".to_string()),
+                duration: result.tokens.last().map(|t| t.end as f64).unwrap_or(0.0),
+                text: result.text,
+                segments,
             };
             Ok(Json(response).into_response())
         }
         "srt" => {
-            let srt = format!("1\n00:00:00,000 --> 00:00:00,000\n{}\n", text);
+            let mut srt = String::new();
+            for (i, token) in result.tokens.iter().enumerate() {
+                let start = format_srt_time(token.start);
+                let end = format_srt_time(token.end);
+                srt.push_str(&format!("{}\n{} --> {}\n{}\n\n", i + 1, start, end, token.text));
+            }
             Ok((StatusCode::OK, srt).into_response())
         }
         "vtt" => {
-            let vtt = format!("WEBVTT\n\n00:00:00.000 --> 00:00:00.000\n{}\n", text);
+            let mut vtt = String::from("WEBVTT\n\n");
+            for token in &result.tokens {
+                let start = format_vtt_time(token.start);
+                let end = format_vtt_time(token.end);
+                vtt.push_str(&format!("{} --> {}\n{}\n\n", start, end, token.text));
+            }
             Ok((StatusCode::OK, vtt).into_response())
         }
         _ => Ok(Json(TranscriptionResponse { text }).into_response()),
     }
 }
 
-async fn save_and_convert_audio(data: &[u8], filename: &str) -> Result<NamedTempFile> {
+fn format_srt_time(seconds: f32) -> String {
+    let hours = (seconds / 3600.0) as u32;
+    let minutes = ((seconds % 3600.0) / 60.0) as u32;
+    let secs = (seconds % 60.0) as u32;
+    let millis = ((seconds % 1.0) * 1000.0) as u32;
+    format!("{:02}:{:02}:{:02},{:03}", hours, minutes, secs, millis)
+}
+
+fn format_vtt_time(seconds: f32) -> String {
+    let hours = (seconds / 3600.0) as u32;
+    let minutes = ((seconds % 3600.0) / 60.0) as u32;
+    let secs = (seconds % 60.0) as u32;
+    let millis = ((seconds % 1.0) * 1000.0) as u32;
+    format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, secs, millis)
+}
+
+async fn convert_to_samples(data: &[u8], filename: &str) -> Result<Vec<f32>> {
     let extension = PathBuf::from(filename)
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_else(|| "wav".to_string());
 
-    let is_wav = extension == "wav";
-
-    if is_wav && is_valid_wav_format(data) {
-        let mut temp_file = NamedTempFile::new().context("Failed to create temp file")?;
-        temp_file.write_all(data).context("Failed to write audio data")?;
-        return Ok(temp_file);
+    // For WAV files, try direct parsing first
+    if extension == "wav" {
+        if let Ok(samples) = parse_wav_samples(data) {
+            return Ok(samples);
+        }
     }
 
-    convert_to_wav(data, &extension).await
+    // For other formats, use symphonia
+    convert_with_symphonia(data).await
 }
 
-fn is_valid_wav_format(data: &[u8]) -> bool {
-    if data.len() < 44 {
-        return false;
-    }
+fn parse_wav_samples(data: &[u8]) -> Result<Vec<f32>> {
+    let cursor = std::io::Cursor::new(data);
+    let mut reader = hound::WavReader::new(cursor).context("Failed to parse WAV")?;
 
-    if &data[0..4] != b"RIFF" || &data[8..12] != b"WAVE" {
-        return false;
-    }
+    let spec = reader.spec();
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Int => {
+            let max_val = (1 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .samples::<i32>()
+                .filter_map(|s| s.ok())
+                .map(|s| s as f32 / max_val)
+                .collect()
+        }
+        hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
+    };
 
-    let channels = u16::from_le_bytes([data[22], data[23]]);
-    let sample_rate = u32::from_le_bytes([data[24], data[25], data[26], data[27]]);
-    let bits_per_sample = u16::from_le_bytes([data[34], data[35]]);
+    // Convert to mono if stereo
+    let samples = if spec.channels > 1 {
+        samples
+            .chunks(spec.channels as usize)
+            .map(|chunk| chunk.iter().sum::<f32>() / chunk.len() as f32)
+            .collect()
+    } else {
+        samples
+    };
 
-    channels == 1 && sample_rate == 16000 && bits_per_sample == 16
+    // Resample to 16kHz if needed
+    let samples = if spec.sample_rate != 16000 {
+        resample(&samples, spec.sample_rate, 16000)
+    } else {
+        samples
+    };
+
+    Ok(samples)
 }
 
-async fn convert_to_wav(data: &[u8], _extension: &str) -> Result<NamedTempFile> {
+async fn convert_with_symphonia(data: &[u8]) -> Result<Vec<f32>> {
     use symphonia::core::audio::SampleBuffer;
     use symphonia::core::codecs::DecoderOptions;
     use symphonia::core::formats::FormatOptions;
@@ -349,7 +399,7 @@ async fn convert_to_wav(data: &[u8], _extension: &str) -> Result<NamedTempFile> 
         .context("Failed to create decoder")?;
 
     let track_id = track.id;
-    let mut samples: Vec<i16> = Vec::new();
+    let mut samples: Vec<f32> = Vec::new();
     let mut source_sample_rate = 16000u32;
 
     loop {
@@ -371,8 +421,7 @@ async fn convert_to_wav(data: &[u8], _extension: &str) -> Result<NamedTempFile> 
 
                         for chunk in src_samples.chunks(channels) {
                             let mono: f32 = chunk.iter().sum::<f32>() / channels as f32;
-                            let sample = (mono * 32767.0).clamp(-32768.0, 32767.0) as i16;
-                            samples.push(sample);
+                            samples.push(mono);
                         }
                     }
                     Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
@@ -383,33 +432,17 @@ async fn convert_to_wav(data: &[u8], _extension: &str) -> Result<NamedTempFile> 
         }
     }
 
+    // Resample to 16kHz if needed
     let samples = if source_sample_rate != 16000 {
         resample(&samples, source_sample_rate, 16000)
     } else {
         samples
     };
 
-    let temp_file = NamedTempFile::new().context("Failed to create temp file")?;
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: 16000,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-
-    let mut writer =
-        hound::WavWriter::create(temp_file.path(), spec).context("Failed to create WAV writer")?;
-
-    for sample in samples {
-        writer.write_sample(sample).context("Failed to write sample")?;
-    }
-
-    writer.finalize().context("Failed to finalize WAV")?;
-
-    Ok(temp_file)
+    Ok(samples)
 }
 
-fn resample(samples: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16> {
+fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     let ratio = to_rate as f64 / from_rate as f64;
     let new_len = (samples.len() as f64 * ratio) as usize;
     let mut resampled = Vec::with_capacity(new_len);
@@ -423,9 +456,9 @@ fn resample(samples: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16> {
         let sample = if idx_floor < samples.len() {
             let s1 = samples[idx_floor] as f64;
             let s2 = samples[idx_ceil] as f64;
-            (s1 + (s2 - s1) * frac) as i16
+            (s1 + (s2 - s1) * frac) as f32
         } else {
-            0
+            0.0
         };
 
         resampled.push(sample);
@@ -446,21 +479,17 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let model_path = PathBuf::from(
-        env::var("MODEL_PATH").unwrap_or_else(|_| DEFAULT_MODEL_PATH.to_string()),
-    );
+    let model_path =
+        PathBuf::from(env::var("MODEL_PATH").unwrap_or_else(|_| DEFAULT_MODEL_PATH.to_string()));
     let host = env::var("HOST").unwrap_or_else(|_| DEFAULT_HOST.to_string());
     let port = env::var("PORT").unwrap_or_else(|_| DEFAULT_PORT.to_string());
 
-    info!("Initializing Parakeet engine...");
-    let engine = ParakeetEngine::new();
+    info!("Model path: {}", model_path.display());
 
     let state = AppState {
-        engine: Arc::new(Mutex::new(engine)),
-        model_path: model_path.clone(),
+        engine: Arc::new(Mutex::new(None)),
+        model_path,
     };
-
-    info!("Model path: {}", model_path.display());
 
     let app = Router::new()
         .route("/health", get(health_check))

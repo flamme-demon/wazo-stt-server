@@ -13,7 +13,7 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 # Transcription engine
-transcribe-rs = { version = "0.2", features = ["parakeet"] }
+parakeet-rs = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -25,11 +25,8 @@ symphonia = { version = "0.5", features = ["mp3", "ogg", "flac", "wav", "pcm"] }
 
 # Utilities
 anyhow = "1"
-thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tempfile = "3"
-uuid = { version = "1", features = ["v4"] }
 
 # Environment
 dotenvy = "0.15"
