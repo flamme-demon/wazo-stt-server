@@ -542,6 +542,7 @@ async fn submit_transcription(
     let mut audio_url: Option<String> = None;
     let mut user_uuid: Option<String> = None;
     let mut message_id: Option<String> = None;
+    let mut force_retranscribe = false;
     let mut params = TranscriptionParams::default();
 
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -571,6 +572,11 @@ async fn submit_transcription(
             "message_id" => {
                 if let Ok(value) = field.text().await {
                     message_id = Some(value);
+                }
+            }
+            "force" => {
+                if let Ok(value) = field.text().await {
+                    force_retranscribe = value == "true" || value == "1";
                 }
             }
             "model" => {
@@ -616,18 +622,34 @@ async fn submit_transcription(
     // Check if transcription already exists in database
     match state.db.find_by_user_and_message(&user_uuid, &message_id) {
         Ok(Some(record)) => {
-            info!(
-                "Found existing transcription for user={}, message={}",
-                user_uuid, message_id
-            );
-            return Json(JobSubmittedResponse {
-                job_id: record.id,
-                status: JobStatus::from_str(&record.status),
-                queue_position: None,
-                message: "Transcription already exists".to_string(),
-                cached: true,
-            })
-            .into_response();
+            if force_retranscribe {
+                // Delete existing record to force re-transcription
+                info!(
+                    "Force re-transcription requested for user={}, message={}",
+                    user_uuid, message_id
+                );
+                if let Err(e) = state.db.delete_by_user_and_message(&user_uuid, &message_id) {
+                    error!("Failed to delete existing transcription: {}", e);
+                    return create_error_response_with_status(
+                        "Database error",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    );
+                }
+                // Continue with new transcription
+            } else {
+                info!(
+                    "Found existing transcription for user={}, message={}",
+                    user_uuid, message_id
+                );
+                return Json(JobSubmittedResponse {
+                    job_id: record.id,
+                    status: JobStatus::from_str(&record.status),
+                    queue_position: None,
+                    message: "Transcription already exists".to_string(),
+                    cached: true,
+                })
+                .into_response();
+            }
         }
         Ok(None) => {} // Continue with new transcription
         Err(e) => {

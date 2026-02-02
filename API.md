@@ -27,6 +27,7 @@ Content-Type: multipart/form-data
 | `message_id` | string | **Oui** | ID du message vocal |
 | `file` | file | Non* | Fichier audio à transcrire |
 | `url` | string | Non* | URL du fichier audio (avec token si nécessaire) |
+| `force` | string | Non | `true` pour forcer la re-transcription (supprime l'existante) |
 | `model` | string | Non | Modèle à utiliser (défaut: parakeet) |
 | `language` | string | Non | Code langue (ex: "fr", "en") |
 | `response_format` | string | Non | Format de sortie: `json`, `text`, `srt`, `vtt`, `verbose_json` |
@@ -49,6 +50,16 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -F "file=@/path/to/audio.wav" \
   -F "user_uuid=550e8400-e29b-41d4-a716-446655440000" \
   -F "message_id=1712847495-00000002"
+```
+
+#### Exemple forcer re-transcription
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F "url=https://wazo.example.com/api/calld/1.0/users/me/voicemails/messages/1712847495-00000002/recording?token=xxx" \
+  -F "user_uuid=550e8400-e29b-41d4-a716-446655440000" \
+  -F "message_id=1712847495-00000002" \
+  -F "force=true"
 ```
 
 #### Réponse - Nouveau job

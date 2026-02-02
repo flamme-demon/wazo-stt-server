@@ -184,6 +184,19 @@ impl Database {
         Ok(())
     }
 
+    pub fn delete_by_user_and_message(&self, user_uuid: &str, message_id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let deleted = conn
+            .execute(
+                "DELETE FROM transcriptions WHERE user_uuid = ?1 AND message_id = ?2",
+                params![user_uuid, message_id],
+            )
+            .context("Failed to delete transcription")?;
+
+        Ok(deleted > 0)
+    }
+
     pub fn cleanup_old(&self, max_age_seconds: i64) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
         let cutoff = std::time::SystemTime::now()
