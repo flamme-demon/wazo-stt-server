@@ -1244,7 +1244,62 @@ async fn convert_with_symphonia(data: &[u8]) -> Result<Vec<f32>> {
     Ok(samples)
 }
 
+/// High-quality audio resampling using rubato (sinc interpolation)
+/// This is critical for ASR - simple linear interpolation causes artifacts
 fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+    use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
+
+    if from_rate == to_rate {
+        return samples.to_vec();
+    }
+
+    // High-quality sinc resampling parameters
+    let params = SincInterpolationParameters {
+        sinc_len: 256,
+        f_cutoff: 0.95,
+        interpolation: SincInterpolationType::Linear,
+        oversampling_factor: 256,
+        window: WindowFunction::BlackmanHarris2,
+    };
+
+    let resample_ratio = to_rate as f64 / from_rate as f64;
+
+    // Create resampler for mono audio (1 channel)
+    let mut resampler = match SincFixedIn::<f32>::new(
+        resample_ratio,
+        2.0, // max relative ratio (allows some flexibility)
+        params,
+        samples.len(),
+        1, // mono
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("Failed to create resampler: {}, falling back to linear", e);
+            return resample_linear(samples, from_rate, to_rate);
+        }
+    };
+
+    // Prepare input as single channel
+    let input = vec![samples.to_vec()];
+
+    // Process
+    match resampler.process(&input, None) {
+        Ok(output) => {
+            if output.is_empty() || output[0].is_empty() {
+                warn!("Resampler returned empty output, falling back to linear");
+                return resample_linear(samples, from_rate, to_rate);
+            }
+            output.into_iter().next().unwrap_or_default()
+        }
+        Err(e) => {
+            warn!("Resampling failed: {}, falling back to linear", e);
+            resample_linear(samples, from_rate, to_rate)
+        }
+    }
+}
+
+/// Fallback linear interpolation resampling (lower quality)
+fn resample_linear(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     let ratio = to_rate as f64 / from_rate as f64;
     let new_len = (samples.len() as f64 * ratio) as usize;
     let mut resampled = Vec::with_capacity(new_len);
