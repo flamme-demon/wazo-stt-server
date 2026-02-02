@@ -989,28 +989,78 @@ fn format_vtt_time(seconds: f32) -> String {
 }
 
 async fn convert_to_samples(data: &[u8], filename: &str) -> Result<Vec<f32>> {
-    let extension = PathBuf::from(filename)
-        .extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_else(|| "wav".to_string());
+    // Detect format from magic bytes first, fallback to extension
+    let format = detect_audio_format(data, filename);
+    info!("Detected audio format: {} (file: {}, size: {} bytes)", format, filename, data.len());
 
-    // For WAV files, try direct parsing first
-    let samples = if extension == "wav" {
-        if let Ok(samples) = parse_wav_samples(data) {
-            samples
-        } else {
-            convert_with_symphonia(data).await?
+    // For WAV files, try direct parsing first (faster)
+    // For unknown or other formats, use symphonia which auto-detects
+    let samples = if format == "wav" {
+        match parse_wav_samples(data) {
+            Ok(samples) => {
+                info!("Parsed WAV with hound: {} samples", samples.len());
+                samples
+            }
+            Err(e) => {
+                warn!("Hound WAV parsing failed ({}), trying symphonia", e);
+                convert_with_symphonia(data).await?
+            }
         }
     } else {
-        // For other formats, use symphonia
+        // For other formats (including unknown), use symphonia which auto-detects
+        info!("Using symphonia for format: {}", format);
         convert_with_symphonia(data).await?
     };
+
+    let duration_secs = samples.len() as f64 / SAMPLE_RATE as f64;
+    info!(
+        "Audio converted: {} samples, {:.2}s duration at {}Hz",
+        samples.len(),
+        duration_secs,
+        SAMPLE_RATE
+    );
 
     // Normalize audio for better transcription quality
     // This matches what pydub.effects.normalize() does in the HuggingFace space
     let samples = normalize_audio(&samples);
 
     Ok(samples)
+}
+
+/// Detect audio format from magic bytes, fallback to filename extension
+fn detect_audio_format(data: &[u8], filename: &str) -> &'static str {
+    // Check magic bytes first
+    if data.len() >= 4 {
+        // WAV: RIFF....WAVE
+        if data.starts_with(b"RIFF") && data.len() >= 12 && &data[8..12] == b"WAVE" {
+            return "wav";
+        }
+        // MP3: ID3 tag or sync bytes
+        if data.starts_with(b"ID3") || (data[0] == 0xFF && (data[1] & 0xE0) == 0xE0) {
+            return "mp3";
+        }
+        // OGG: OggS
+        if data.starts_with(b"OggS") {
+            return "ogg";
+        }
+        // FLAC: fLaC
+        if data.starts_with(b"fLaC") {
+            return "flac";
+        }
+    }
+
+    // Fallback to filename extension
+    PathBuf::from(filename)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .map(|ext| match ext.as_str() {
+            "wav" => "wav",
+            "mp3" => "mp3",
+            "ogg" | "oga" => "ogg",
+            "flac" => "flac",
+            _ => "unknown",
+        })
+        .unwrap_or("unknown")
 }
 
 /// Normalize audio to peak amplitude (similar to pydub.effects.normalize)
@@ -1111,6 +1161,15 @@ async fn convert_with_symphonia(data: &[u8]) -> Result<Vec<f32>> {
         .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
         .context("No audio track found")?;
 
+    // Log track info
+    let codec_name = format!("{:?}", track.codec_params.codec);
+    let source_rate = track.codec_params.sample_rate.unwrap_or(0);
+    let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(0);
+    info!(
+        "Symphonia detected: codec={}, sample_rate={}, channels={}",
+        codec_name, source_rate, channels
+    );
+
     let decoder_opts = DecoderOptions::default();
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &decoder_opts)
@@ -1150,9 +1209,22 @@ async fn convert_with_symphonia(data: &[u8]) -> Result<Vec<f32>> {
         }
     }
 
+    info!(
+        "Symphonia decoded: {} samples at {}Hz (before resampling)",
+        samples.len(),
+        source_sample_rate
+    );
+
     // Resample to 16kHz if needed
     let samples = if source_sample_rate != 16000 {
-        resample(&samples, source_sample_rate, 16000)
+        let resampled = resample(&samples, source_sample_rate, 16000);
+        info!(
+            "Resampled from {}Hz to 16000Hz: {} -> {} samples",
+            source_sample_rate,
+            samples.len(),
+            resampled.len()
+        );
+        resampled
     } else {
         samples
     };
