@@ -807,8 +807,8 @@ async fn main() -> Result<()> {
         .route("/v1/models", get(list_models))
         .route("/v1/audio/transcriptions", post(submit_transcription))
         .route("/v1/audio/transcriptions/status", get(queue_status))
-        .route("/v1/audio/transcriptions/{job_id}", get(get_job_status))
-        .route("/v1/audio/transcriptions/{job_id}/result", get(get_job_result))
+        .route("/v1/audio/transcriptions/:job_id", get(get_job_status))
+        .route("/v1/audio/transcriptions/:job_id/result", get(get_job_result))
         .layer(DefaultBodyLimit::max(MAX_UPLOAD_SIZE))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
@@ -819,8 +819,8 @@ async fn main() -> Result<()> {
     info!("API endpoints:");
     info!("  POST http://{}/v1/audio/transcriptions - Submit transcription job", addr);
     info!("  GET  http://{}/v1/audio/transcriptions/status - Queue status", addr);
-    info!("  GET  http://{}/v1/audio/transcriptions/{{job_id}} - Job status", addr);
-    info!("  GET  http://{}/v1/audio/transcriptions/{{job_id}}/result - Get result", addr);
+    info!("  GET  http://{}/v1/audio/transcriptions/:job_id - Job status", addr);
+    info!("  GET  http://{}/v1/audio/transcriptions/:job_id/result - Get result", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
