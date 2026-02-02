@@ -995,14 +995,56 @@ async fn convert_to_samples(data: &[u8], filename: &str) -> Result<Vec<f32>> {
         .unwrap_or_else(|| "wav".to_string());
 
     // For WAV files, try direct parsing first
-    if extension == "wav" {
+    let samples = if extension == "wav" {
         if let Ok(samples) = parse_wav_samples(data) {
-            return Ok(samples);
+            samples
+        } else {
+            convert_with_symphonia(data).await?
         }
+    } else {
+        // For other formats, use symphonia
+        convert_with_symphonia(data).await?
+    };
+
+    // Normalize audio for better transcription quality
+    // This matches what pydub.effects.normalize() does in the HuggingFace space
+    let samples = normalize_audio(&samples);
+
+    Ok(samples)
+}
+
+/// Normalize audio to peak amplitude (similar to pydub.effects.normalize)
+/// This improves transcription quality by ensuring consistent audio levels
+fn normalize_audio(samples: &[f32]) -> Vec<f32> {
+    if samples.is_empty() {
+        return samples.to_vec();
     }
 
-    // For other formats, use symphonia
-    convert_with_symphonia(data).await
+    // Find peak amplitude
+    let peak = samples
+        .iter()
+        .map(|s| s.abs())
+        .fold(0.0f32, |a, b| a.max(b));
+
+    // Avoid division by zero or amplifying silence
+    if peak < 1e-6 {
+        info!("Audio is silent or near-silent (peak: {}), skipping normalization", peak);
+        return samples.to_vec();
+    }
+
+    // Target peak amplitude (0.95 to avoid clipping, similar to pydub's headroom)
+    let target_peak = 0.95f32;
+    let gain = target_peak / peak;
+
+    // Log the normalization being applied
+    let gain_db = 20.0 * gain.log10();
+    info!(
+        "Normalizing audio: peak={:.4}, gain={:.2}x ({:.1} dB)",
+        peak, gain, gain_db
+    );
+
+    // Apply gain
+    samples.iter().map(|s| s * gain).collect()
 }
 
 fn parse_wav_samples(data: &[u8]) -> Result<Vec<f32>> {
