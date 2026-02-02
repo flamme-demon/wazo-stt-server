@@ -1,11 +1,14 @@
+mod db;
+
 use anyhow::{Context, Result};
 use axum::{
-    extract::{DefaultBodyLimit, Multipart, Path, State},
+    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::{get, post},
     Router,
 };
+use db::{Database, TranscriptionRecord};
 use parakeet_rs::{ParakeetTDT, TimestampMode, Transcriber};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -17,12 +20,13 @@ use std::{
 };
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 const DEFAULT_MODEL_PATH: &str = "/models/parakeet";
 const DEFAULT_HOST: &str = "0.0.0.0";
 const DEFAULT_PORT: &str = "8000";
+const DEFAULT_DB_PATH: &str = "/data/transcriptions.db";
 const MAX_UPLOAD_SIZE: usize = 100 * 1024 * 1024; // 100MB
 const MAX_QUEUE_SIZE: usize = 100;
 
@@ -36,17 +40,40 @@ enum JobStatus {
     Failed,
 }
 
-// Job structure
+impl JobStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            JobStatus::Queued => "queued",
+            JobStatus::Processing => "processing",
+            JobStatus::Completed => "completed",
+            JobStatus::Failed => "failed",
+        }
+    }
+
+    fn from_str(s: &str) -> Self {
+        match s {
+            "queued" => JobStatus::Queued,
+            "processing" => JobStatus::Processing,
+            "completed" => JobStatus::Completed,
+            "failed" => JobStatus::Failed,
+            _ => JobStatus::Failed,
+        }
+    }
+}
+
+// Job structure (in-memory, for queue processing)
 #[derive(Debug, Clone)]
 struct Job {
     id: String,
+    user_uuid: String,
+    message_id: String,
     status: JobStatus,
     queue_position: Option<usize>,
     audio_samples: Vec<f32>,
     params: TranscriptionParams,
     result: Option<TranscriptionResult>,
     error: Option<String>,
-    created_at: u64,
+    created_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +96,7 @@ struct AppState {
     jobs: Arc<RwLock<HashMap<String, Job>>>,
     queue: Arc<RwLock<VecDeque<String>>>,
     job_sender: mpsc::Sender<String>,
+    db: Arc<Database>,
     model_path: PathBuf,
 }
 
@@ -77,8 +105,10 @@ struct AppState {
 struct JobSubmittedResponse {
     job_id: String,
     status: JobStatus,
-    queue_position: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    queue_position: Option<usize>,
     message: String,
+    cached: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -88,13 +118,40 @@ struct JobStatusResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     queue_position: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    user_uuid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     duration: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    created_at: Option<u64>,
+    created_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct LookupResponse {
+    found: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    job_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<JobStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    created_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LookupQuery {
+    user_uuid: String,
+    message_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -169,6 +226,15 @@ struct HealthResponse {
     model: String,
     version: String,
     queue_length: usize,
+    db_stats: DbStatsResponse,
+}
+
+#[derive(Debug, Serialize)]
+struct DbStatsResponse {
+    total: usize,
+    completed: usize,
+    failed: usize,
+    pending: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -199,11 +265,19 @@ fn create_error_response_with_status(message: &str, status: StatusCode) -> axum:
     (status, Json(create_error_response(message))).into_response()
 }
 
+fn now_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
 // Background worker that processes jobs
 async fn job_worker(
     mut receiver: mpsc::Receiver<String>,
     jobs: Arc<RwLock<HashMap<String, Job>>>,
     queue: Arc<RwLock<VecDeque<String>>>,
+    db: Arc<Database>,
     model_path: PathBuf,
 ) {
     info!("Job worker starting, loading model...");
@@ -224,6 +298,11 @@ async fn job_worker(
 
     while let Some(job_id) = receiver.recv().await {
         info!("Processing job: {}", job_id);
+
+        // Update status in DB
+        if let Err(e) = db.update_status(&job_id, "processing") {
+            warn!("Failed to update job status in DB: {}", e);
+        }
 
         // Get job data
         let job_data = {
@@ -251,7 +330,7 @@ async fn job_worker(
             }
         }
 
-        if let Some((samples, params)) = job_data {
+        if let Some((samples, _params)) = job_data {
             // Process transcription
             let result = {
                 let mut engine_guard = engine.lock().await;
@@ -274,18 +353,32 @@ async fn job_worker(
                             .collect();
 
                         let duration = transcription.tokens.last().map(|t| t.end as f64).unwrap_or(0.0);
+                        let text = transcription.text.clone();
 
                         job.result = Some(TranscriptionResult {
-                            text: transcription.text.clone(),
+                            text: text.clone(),
                             tokens,
                             duration,
                         });
                         job.status = JobStatus::Completed;
-                        info!("Job {} completed: {} chars", job_id, transcription.text.len());
+
+                        // Persist to database
+                        if let Err(e) = db.update_completed(&job_id, &text, duration, now_timestamp()) {
+                            error!("Failed to persist completed job to DB: {}", e);
+                        }
+
+                        info!("Job {} completed: {} chars", job_id, text.len());
                     }
                     Err(e) => {
-                        job.error = Some(format!("Transcription failed: {}", e));
+                        let error_msg = format!("Transcription failed: {}", e);
+                        job.error = Some(error_msg.clone());
                         job.status = JobStatus::Failed;
+
+                        // Persist failure to database
+                        if let Err(e) = db.update_failed(&job_id, &error_msg) {
+                            error!("Failed to persist failed job to DB: {}", e);
+                        }
+
                         error!("Job {} failed: {}", job_id, e);
                     }
                 }
@@ -296,11 +389,24 @@ async fn job_worker(
 
 async fn health_check(State(state): State<AppState>) -> Json<HealthResponse> {
     let queue_len = state.queue.read().await.len();
+    let db_stats = state.db.get_stats().unwrap_or(db::DbStats {
+        total: 0,
+        completed: 0,
+        failed: 0,
+        pending: 0,
+    });
+
     Json(HealthResponse {
         status: "healthy".to_string(),
         model: state.model_path.to_string_lossy().to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         queue_length: queue_len,
+        db_stats: DbStatsResponse {
+            total: db_stats.total,
+            completed: db_stats.completed,
+            failed: db_stats.failed,
+            pending: db_stats.pending,
+        },
     })
 }
 
@@ -337,12 +443,54 @@ async fn list_models() -> Json<ModelsResponse> {
     })
 }
 
+async fn lookup_transcription(
+    State(state): State<AppState>,
+    Query(query): Query<LookupQuery>,
+) -> axum::response::Response {
+    // Check database for existing transcription
+    match state.db.find_by_user_and_message(&query.user_uuid, &query.message_id) {
+        Ok(Some(record)) => {
+            Json(LookupResponse {
+                found: true,
+                job_id: Some(record.id),
+                status: Some(JobStatus::from_str(&record.status)),
+                text: record.text,
+                duration: record.duration,
+                error: record.error,
+                created_at: Some(record.created_at),
+            })
+            .into_response()
+        }
+        Ok(None) => {
+            Json(LookupResponse {
+                found: false,
+                job_id: None,
+                status: None,
+                text: None,
+                duration: None,
+                error: None,
+                created_at: None,
+            })
+            .into_response()
+        }
+        Err(e) => {
+            error!("Database lookup error: {}", e);
+            create_error_response_with_status(
+                "Database error",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+        }
+    }
+}
+
 async fn submit_transcription(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> axum::response::Response {
     let mut audio_data: Option<Vec<u8>> = None;
     let mut original_filename: Option<String> = None;
+    let mut user_uuid: Option<String> = None;
+    let mut message_id: Option<String> = None;
     let mut params = TranscriptionParams::default();
 
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -357,6 +505,16 @@ async fn submit_transcription(
                         return create_error_response(&format!("Failed to read file: {}", e))
                             .into_response()
                     }
+                }
+            }
+            "user_uuid" => {
+                if let Ok(value) = field.text().await {
+                    user_uuid = Some(value);
+                }
+            }
+            "message_id" => {
+                if let Ok(value) = field.text().await {
+                    message_id = Some(value);
                 }
             }
             "model" => {
@@ -388,6 +546,43 @@ async fn submit_transcription(
         }
     }
 
+    // Validate required fields
+    let user_uuid = match user_uuid {
+        Some(u) if !u.is_empty() => u,
+        _ => return create_error_response("user_uuid is required").into_response(),
+    };
+
+    let message_id = match message_id {
+        Some(m) if !m.is_empty() => m,
+        _ => return create_error_response("message_id is required").into_response(),
+    };
+
+    // Check if transcription already exists in database
+    match state.db.find_by_user_and_message(&user_uuid, &message_id) {
+        Ok(Some(record)) => {
+            info!(
+                "Found existing transcription for user={}, message={}",
+                user_uuid, message_id
+            );
+            return Json(JobSubmittedResponse {
+                job_id: record.id,
+                status: JobStatus::from_str(&record.status),
+                queue_position: None,
+                message: "Transcription already exists".to_string(),
+                cached: true,
+            })
+            .into_response();
+        }
+        Ok(None) => {} // Continue with new transcription
+        Err(e) => {
+            error!("Database lookup error: {}", e);
+            return create_error_response_with_status(
+                "Database error",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    }
+
     let audio_data = match audio_data {
         Some(data) => data,
         None => return create_error_response("No audio file provided").into_response(),
@@ -406,9 +601,8 @@ async fn submit_transcription(
     }
 
     info!(
-        "Received transcription request: filename={}, size={} bytes",
-        filename,
-        audio_data.len()
+        "Received transcription request: user={}, message={}, filename={}, size={} bytes",
+        user_uuid, message_id, filename, audio_data.len()
     );
 
     // Convert audio to samples
@@ -422,10 +616,28 @@ async fn submit_transcription(
 
     // Create job
     let job_id = Uuid::new_v4().to_string();
-    let created_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let created_at = now_timestamp();
+
+    // Insert into database first
+    let db_record = TranscriptionRecord {
+        id: job_id.clone(),
+        user_uuid: user_uuid.clone(),
+        message_id: message_id.clone(),
+        status: "queued".to_string(),
+        text: None,
+        duration: None,
+        error: None,
+        created_at,
+        completed_at: None,
+    };
+
+    if let Err(e) = state.db.insert(&db_record) {
+        error!("Failed to insert job into database: {}", e);
+        return create_error_response_with_status(
+            "Database error",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+    }
 
     let queue_position = {
         let mut queue_guard = state.queue.write().await;
@@ -435,6 +647,8 @@ async fn submit_transcription(
 
     let job = Job {
         id: job_id.clone(),
+        user_uuid: user_uuid.clone(),
+        message_id: message_id.clone(),
         status: JobStatus::Queued,
         queue_position: Some(queue_position),
         audio_samples: samples,
@@ -444,7 +658,7 @@ async fn submit_transcription(
         created_at,
     };
 
-    // Store job
+    // Store job in memory
     {
         let mut jobs_guard = state.jobs.write().await;
         jobs_guard.insert(job_id.clone(), job);
@@ -461,8 +675,9 @@ async fn submit_transcription(
     Json(JobSubmittedResponse {
         job_id,
         status: JobStatus::Queued,
-        queue_position,
+        queue_position: Some(queue_position),
         message: format!("Job queued. Position in queue: {}", queue_position),
+        cached: false,
     })
     .into_response()
 }
@@ -471,25 +686,52 @@ async fn get_job_status(
     State(state): State<AppState>,
     Path(job_id): Path<String>,
 ) -> axum::response::Response {
-    let jobs_guard = state.jobs.read().await;
-
-    match jobs_guard.get(&job_id) {
-        Some(job) => {
-            let response = JobStatusResponse {
+    // First check in-memory jobs (for queue position info)
+    {
+        let jobs_guard = state.jobs.read().await;
+        if let Some(job) = jobs_guard.get(&job_id) {
+            return Json(JobStatusResponse {
                 job_id: job.id.clone(),
                 status: job.status.clone(),
                 queue_position: job.queue_position,
+                user_uuid: Some(job.user_uuid.clone()),
+                message_id: Some(job.message_id.clone()),
                 text: job.result.as_ref().map(|r| r.text.clone()),
                 duration: job.result.as_ref().map(|r| r.duration),
                 error: job.error.clone(),
                 created_at: Some(job.created_at),
-            };
-            Json(response).into_response()
+            })
+            .into_response();
         }
-        None => create_error_response_with_status(
+    }
+
+    // Fall back to database
+    match state.db.find_by_id(&job_id) {
+        Ok(Some(record)) => {
+            Json(JobStatusResponse {
+                job_id: record.id,
+                status: JobStatus::from_str(&record.status),
+                queue_position: None,
+                user_uuid: Some(record.user_uuid),
+                message_id: Some(record.message_id),
+                text: record.text,
+                duration: record.duration,
+                error: record.error,
+                created_at: Some(record.created_at),
+            })
+            .into_response()
+        }
+        Ok(None) => create_error_response_with_status(
             &format!("Job not found: {}", job_id),
             StatusCode::NOT_FOUND,
         ),
+        Err(e) => {
+            error!("Database error: {}", e);
+            create_error_response_with_status(
+                "Database error",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+        }
     }
 }
 
@@ -497,37 +739,72 @@ async fn get_job_result(
     State(state): State<AppState>,
     Path(job_id): Path<String>,
 ) -> axum::response::Response {
-    let jobs_guard = state.jobs.read().await;
+    // First check in-memory jobs
+    {
+        let jobs_guard = state.jobs.read().await;
+        if let Some(job) = jobs_guard.get(&job_id) {
+            return match &job.status {
+                JobStatus::Completed => {
+                    if let Some(result) = &job.result {
+                        let response_format = job.params.response_format.as_deref().unwrap_or("json");
+                        format_transcription_response(result, &job.params, response_format)
+                    } else {
+                        create_error_response("Result not available").into_response()
+                    }
+                }
+                JobStatus::Failed => {
+                    let error_msg = job.error.as_deref().unwrap_or("Unknown error");
+                    create_error_response(error_msg).into_response()
+                }
+                JobStatus::Queued => {
+                    let pos = job.queue_position.unwrap_or(0);
+                    create_error_response_with_status(
+                        &format!("Job is still queued at position {}", pos),
+                        StatusCode::ACCEPTED,
+                    )
+                }
+                JobStatus::Processing => {
+                    create_error_response_with_status("Job is still processing", StatusCode::ACCEPTED)
+                }
+            };
+        }
+    }
 
-    match jobs_guard.get(&job_id) {
-        Some(job) => match &job.status {
-            JobStatus::Completed => {
-                if let Some(result) = &job.result {
-                    let response_format = job.params.response_format.as_deref().unwrap_or("json");
-                    format_transcription_response(result, &job.params, response_format)
-                } else {
-                    create_error_response("Result not available").into_response()
+    // Fall back to database
+    match state.db.find_by_id(&job_id) {
+        Ok(Some(record)) => {
+            let status = JobStatus::from_str(&record.status);
+            match status {
+                JobStatus::Completed => {
+                    if let Some(text) = record.text {
+                        Json(TranscriptionResponse { text }).into_response()
+                    } else {
+                        create_error_response("Result not available").into_response()
+                    }
+                }
+                JobStatus::Failed => {
+                    let error_msg = record.error.as_deref().unwrap_or("Unknown error");
+                    create_error_response(error_msg).into_response()
+                }
+                JobStatus::Queued | JobStatus::Processing => {
+                    create_error_response_with_status(
+                        "Job is still processing",
+                        StatusCode::ACCEPTED,
+                    )
                 }
             }
-            JobStatus::Failed => {
-                let error_msg = job.error.as_deref().unwrap_or("Unknown error");
-                create_error_response(error_msg).into_response()
-            }
-            JobStatus::Queued => {
-                let pos = job.queue_position.unwrap_or(0);
-                create_error_response_with_status(
-                    &format!("Job is still queued at position {}", pos),
-                    StatusCode::ACCEPTED,
-                )
-            }
-            JobStatus::Processing => {
-                create_error_response_with_status("Job is still processing", StatusCode::ACCEPTED)
-            }
-        },
-        None => create_error_response_with_status(
+        }
+        Ok(None) => create_error_response_with_status(
             &format!("Job not found: {}", job_id),
             StatusCode::NOT_FOUND,
         ),
+        Err(e) => {
+            error!("Database error: {}", e);
+            create_error_response_with_status(
+                "Database error",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+        }
     }
 }
 
@@ -778,8 +1055,20 @@ async fn main() -> Result<()> {
         PathBuf::from(env::var("MODEL_PATH").unwrap_or_else(|_| DEFAULT_MODEL_PATH.to_string()));
     let host = env::var("HOST").unwrap_or_else(|_| DEFAULT_HOST.to_string());
     let port = env::var("PORT").unwrap_or_else(|_| DEFAULT_PORT.to_string());
+    let db_path =
+        PathBuf::from(env::var("DB_PATH").unwrap_or_else(|_| DEFAULT_DB_PATH.to_string()));
 
     info!("Model path: {}", model_path.display());
+    info!("Database path: {}", db_path.display());
+
+    // Ensure database directory exists
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).context("Failed to create database directory")?;
+    }
+
+    // Initialize database
+    let db = Arc::new(Database::new(&db_path).context("Failed to initialize database")?);
+    info!("Database initialized");
 
     // Create job queue channel
     let (job_sender, job_receiver) = mpsc::channel::<String>(100);
@@ -790,15 +1079,17 @@ async fn main() -> Result<()> {
     // Spawn background worker
     let worker_jobs = jobs.clone();
     let worker_queue = queue.clone();
+    let worker_db = db.clone();
     let worker_model_path = model_path.clone();
     tokio::spawn(async move {
-        job_worker(job_receiver, worker_jobs, worker_queue, worker_model_path).await;
+        job_worker(job_receiver, worker_jobs, worker_queue, worker_db, worker_model_path).await;
     });
 
     let state = AppState {
         jobs,
         queue,
         job_sender,
+        db,
         model_path,
     };
 
@@ -806,6 +1097,7 @@ async fn main() -> Result<()> {
         .route("/health", get(health_check))
         .route("/v1/models", get(list_models))
         .route("/v1/audio/transcriptions", post(submit_transcription))
+        .route("/v1/audio/transcriptions/lookup", get(lookup_transcription))
         .route("/v1/audio/transcriptions/status", get(queue_status))
         .route("/v1/audio/transcriptions/:job_id", get(get_job_status))
         .route("/v1/audio/transcriptions/:job_id/result", get(get_job_result))
@@ -818,6 +1110,7 @@ async fn main() -> Result<()> {
     info!("Starting server on http://{}", addr);
     info!("API endpoints:");
     info!("  POST http://{}/v1/audio/transcriptions - Submit transcription job", addr);
+    info!("  GET  http://{}/v1/audio/transcriptions/lookup?user_uuid=X&message_id=Y - Lookup existing", addr);
     info!("  GET  http://{}/v1/audio/transcriptions/status - Queue status", addr);
     info!("  GET  http://{}/v1/audio/transcriptions/:job_id - Job status", addr);
     info!("  GET  http://{}/v1/audio/transcriptions/:job_id/result - Get result", addr);

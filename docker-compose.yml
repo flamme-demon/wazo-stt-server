@@ -9,8 +9,10 @@ services:
       - "8000:8000"
     volumes:
       - models:/models
+      - data:/data
     environment:
       - MODEL_PATH=/models/parakeet
+      - DB_PATH=/data/transcriptions.db
       - HOST=0.0.0.0
       - PORT=8000
       - RUST_LOG=info
@@ -82,3 +84,5 @@ services:
 volumes:
   models:
     name: wazo-stt-models
+  data:
+    name: wazo-stt-data
