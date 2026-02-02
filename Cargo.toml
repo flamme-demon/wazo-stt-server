@@ -13,7 +13,7 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 # Transcription engine
-transcribe-rs = { version = "0.1", features = ["parakeet"] }
+transcribe-rs = { version = "0.2", features = ["parakeet"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

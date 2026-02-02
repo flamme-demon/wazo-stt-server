@@ -17,7 +17,7 @@ use tempfile::NamedTempFile;
 use tokio::sync::Mutex;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{error, info};
-use transcribe_rs::parakeet::ParakeetEngine;
+use transcribe_rs::{TranscriptionEngine, engines::parakeet::ParakeetEngine};
 use uuid::Uuid;
 
 const DEFAULT_MODEL_PATH: &str = "/models/parakeet";

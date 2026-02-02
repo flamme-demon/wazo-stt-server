@@ -31,42 +31,40 @@ services:
     command:
       - |
         set -e
-        apk add --no-cache curl
+        apk add --no-cache curl tar
 
         MODEL_DIR=/models/parakeet
-        MODEL_URL="https://huggingface.co/smcleod/parakeet-tdt-0.6b-v2-int8/resolve/main"
+        MODEL_URL="https://blob.handy.computer/parakeet-v3-int8.tar.gz"
 
         echo "=== Parakeet Model Downloader ==="
         echo "Model directory: $$MODEL_DIR"
 
         mkdir -p "$$MODEL_DIR"
 
-        download_file() {
-          url="$$1"
-          output="$$2"
-          if [ -f "$$output" ]; then
-            echo "File already exists: $$output"
-            return 0
-          fi
-          echo "Downloading: $$output"
-          curl -L --progress-bar -o "$$output" "$$url"
-        }
-
-        echo ""
-        echo "Downloading Parakeet TDT 0.6B v2 (int8 quantized)..."
-        echo ""
-
-        download_file "$${MODEL_URL}/encoder-model.int8.onnx" "$${MODEL_DIR}/encoder.onnx"
-        download_file "$${MODEL_URL}/encoder-model.int8.onnx.data" "$${MODEL_DIR}/encoder.onnx.data" || true
-        download_file "$${MODEL_URL}/decoder_joint-model.int8.onnx" "$${MODEL_DIR}/decoder.onnx"
-        download_file "$${MODEL_URL}/nemo128.onnx" "$${MODEL_DIR}/preprocessor.onnx"
-
-        # Download tokens.txt
-        if [ ! -f "$${MODEL_DIR}/tokens.txt" ]; then
-          echo "Downloading tokens.txt..."
-          curl -L -o "$${MODEL_DIR}/tokens.txt" \
-            "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/main/tokens.txt" || true
+        # Check if model already exists
+        if [ -f "$$MODEL_DIR/encoder.onnx" ]; then
+          echo "Model already downloaded."
+          ls -lh "$$MODEL_DIR"
+          exit 0
         fi
+
+        echo ""
+        echo "Downloading Parakeet TDT v3 int8 from handy.computer..."
+        echo ""
+
+        cd /models
+        curl -L --progress-bar -o parakeet-v3-int8.tar.gz "$$MODEL_URL"
+
+        echo "Extracting model..."
+        tar -xzf parakeet-v3-int8.tar.gz
+
+        # Move files to correct location if needed
+        if [ -d "/models/parakeet-v3-int8" ]; then
+          mv /models/parakeet-v3-int8/* "$$MODEL_DIR/" 2>/dev/null || true
+          rm -rf /models/parakeet-v3-int8
+        fi
+
+        rm -f parakeet-v3-int8.tar.gz
 
         echo ""
         echo "=== Download Complete ==="
