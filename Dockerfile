@@ -1,5 +1,5 @@
-# Build stage
-FROM rust:1.93-bookworm AS builder
+# Build stage - use trixie for glibc 2.38+ (required by ort)
+FROM rust:1.93-trixie AS builder
 
 WORKDIR /app
 
@@ -26,8 +26,8 @@ COPY src ./src
 # Build the application
 RUN touch src/main.rs && cargo build --release
 
-# Runtime stage
-FROM debian:bookworm-slim
+# Runtime stage - use trixie for glibc 2.38+ compatibility
+FROM debian:trixie-slim
 
 WORKDIR /app
 
