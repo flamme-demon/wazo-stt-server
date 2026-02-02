@@ -245,8 +245,8 @@ def transcribe_audio(audio: AudioSegment) -> TranscriptionResult:
         temp_path = f.name
 
     try:
-        # Transcribe with timestamps
-        result = model.transcribe(temp_path)
+        # Transcribe with timestamps - model is callable
+        result = model(temp_path)
 
         # Extract segments with timestamps
         segments = []
