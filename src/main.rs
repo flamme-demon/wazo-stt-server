@@ -235,7 +235,7 @@ async fn transcribe(
         let engine = engine_guard.as_mut().unwrap();
 
         engine
-            .transcribe_samples(&samples, 16000, 1, Some(TimestampMode::Segments))
+            .transcribe_samples(samples, 16000, 1, Some(TimestampMode::Words))
             .map_err(|e| create_error_response(&format!("Transcription failed: {}", e)))?
     };
 
@@ -412,11 +412,11 @@ async fn convert_with_symphonia(data: &[u8]) -> Result<Vec<f32>> {
                 match decoder.decode(&packet) {
                     Ok(decoded) => {
                         source_sample_rate = decoded.spec().rate;
+                        let channels = decoded.spec().channels.count();
                         let mut sample_buf =
                             SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
                         sample_buf.copy_interleaved_ref(decoded);
 
-                        let channels = decoded.spec().channels.count();
                         let src_samples = sample_buf.samples();
 
                         for chunk in src_samples.chunks(channels) {
