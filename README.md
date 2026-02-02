@@ -1,92 +1,101 @@
-# wazo-stt-server
+# Wazo STT Server
 
-An OpenAI Whisper-compatible ASR (Automatic Speech Recognition) server using NVIDIA's Parakeet model, optimized for CPU inference.
+Serveur de transcription automatique (ASR) compatible OpenAI Whisper utilisant le modèle NVIDIA Parakeet, optimisé pour l'inférence CPU.
 
-Built with Rust using [transcribe-rs](https://github.com/cjpais/transcribe-rs) for high-performance audio transcription.
+## Fonctionnalités
 
-## Features
+- API compatible OpenAI Whisper (`/v1/audio/transcriptions`)
+- Modèle NVIDIA Parakeet TDT 0.6B (quantifié int8 pour CPU)
+- **File d'attente asynchrone** avec suivi de position
+- **Persistance SQLite** des transcriptions
+- **Lookup par user_uuid/message_id** pour éviter les re-transcriptions
+- **Fetch audio depuis URL** (Wazo, etc.)
+- Support multi-format audio (WAV, MP3, FLAC, OGG)
+- Conversion automatique (16kHz, mono)
+- Formats de sortie : JSON, text, SRT, VTT, verbose_json
 
-- OpenAI Whisper API compatible (`/v1/audio/transcriptions`)
-- NVIDIA Parakeet TDT 0.6B model (int8 quantized for CPU)
-- Multiple audio format support (WAV, MP3, FLAC, OGG)
-- Automatic audio conversion to required format (16kHz, mono, 16-bit)
-- Docker support for easy deployment
-- Multiple response formats: JSON, text, SRT, VTT, verbose_json
+## Démarrage rapide
 
-## Quick Start with Docker
-
-### 1. Download the model
+### 1. Télécharger le modèle
 
 ```bash
 docker compose --profile setup run model-downloader
 ```
 
-### 2. Start the server
+### 2. Démarrer le serveur
 
 ```bash
 docker compose up -d
 ```
 
-The server will be available at `http://localhost:8000`.
+Le serveur est disponible sur `http://localhost:8000`.
 
-## API Endpoints
+## Utilisation basique
 
-### Health Check
-
-```bash
-curl http://localhost:8000/health
-```
-
-### List Models
-
-```bash
-curl http://localhost:8000/v1/models
-```
-
-### Transcribe Audio
+### Transcrire un fichier audio
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/transcriptions \
-  -H "Content-Type: multipart/form-data" \
   -F "file=@audio.wav" \
-  -F "model=parakeet"
+  -F "user_uuid=abc-123" \
+  -F "message_id=msg-456"
 ```
 
-#### Request Parameters
+### Transcrire depuis une URL
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `file` | file | **Required**. Audio file to transcribe |
-| `model` | string | Model to use (default: parakeet) |
-| `language` | string | Language code (e.g., "en") |
-| `response_format` | string | Output format: `json`, `text`, `srt`, `vtt`, `verbose_json` |
-| `temperature` | number | Sampling temperature (0-1) |
-
-#### Response (JSON)
-
-```json
-{
-  "text": "The transcribed text appears here."
-}
+```bash
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F "url=https://example.com/audio.wav?token=xxx" \
+  -F "user_uuid=abc-123" \
+  -F "message_id=msg-456"
 ```
+
+### Vérifier si une transcription existe
+
+```bash
+curl "http://localhost:8000/v1/audio/transcriptions/lookup?user_uuid=abc-123&message_id=msg-456"
+```
+
+### Récupérer le statut d'un job
+
+```bash
+curl http://localhost:8000/v1/audio/transcriptions/{job_id}
+```
+
+## Documentation API
+
+Voir [API.md](API.md) pour la documentation complète de l'API.
 
 ## Configuration
 
-Environment variables:
+| Variable | Défaut | Description |
+|----------|--------|-------------|
+| `MODEL_PATH` | `/models/parakeet` | Chemin vers les fichiers du modèle |
+| `DB_PATH` | `/data/transcriptions.db` | Chemin de la base SQLite |
+| `HOST` | `0.0.0.0` | Adresse de bind |
+| `PORT` | `8000` | Port du serveur |
+| `RUST_LOG` | `info` | Niveau de log |
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MODEL_PATH` | `/models/parakeet` | Path to model files |
-| `HOST` | `0.0.0.0` | Server bind address |
-| `PORT` | `8000` | Server port |
-| `RUST_LOG` | `info` | Log level |
+## Volumes Docker
 
-## Building from Source
+| Volume | Chemin | Description |
+|--------|--------|-------------|
+| `wazo-stt-models` | `/models` | Fichiers du modèle Parakeet |
+| `wazo-stt-data` | `/data` | Base de données SQLite |
 
-### Prerequisites
+## Performance
 
-- Rust 1.75+
-- System dependencies: `pkg-config`, `libssl-dev`, `cmake`
+Avec Parakeet TDT 0.6B int8 :
+- ~5-20x temps réel sur CPU moderne
+- ~622MB taille du modèle (encoder)
+- ~2GB RAM utilisée
+
+## Compilation depuis les sources
+
+### Prérequis
+
+- Rust 1.85+
+- Dépendances : `pkg-config`, `libssl-dev`, `cmake`
 
 ### Build
 
@@ -97,27 +106,8 @@ cargo build --release
 ### Run
 
 ```bash
-# Download model first
-./scripts/download-model.sh
-
-# Start server
-MODEL_PATH=./models/parakeet cargo run --release
+MODEL_PATH=./models/parakeet DB_PATH=./data/transcriptions.db cargo run --release
 ```
-
-## Audio Requirements
-
-The Parakeet model requires:
-- Sample rate: 16 kHz
-- Channels: Mono (1 channel)
-- Format: 16-bit PCM WAV
-
-The server automatically converts uploaded audio to the required format.
-
-## Performance
-
-Using int8 quantized Parakeet TDT 0.6B:
-- ~5-20x real-time on modern CPUs
-- ~622MB model size (encoder)
 
 ## License
 
