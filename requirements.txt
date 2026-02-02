@@ -4,7 +4,7 @@ uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
 
 # ASR engine (same as HuggingFace space)
-onnx-asr>=0.2.0
+onnx-asr[cpu,hub]>=0.6.1
 
 # Audio processing
 pydub>=0.25.1
