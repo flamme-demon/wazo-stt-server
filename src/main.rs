@@ -244,8 +244,8 @@ async fn transcribe(
 
     let response_format = params.response_format.as_deref().unwrap_or("json");
 
-    match response_format {
-        "text" => Ok((StatusCode::OK, text).into_response()),
+    let response = match response_format {
+        "text" => (StatusCode::OK, text).into_response(),
         "verbose_json" => {
             let segments: Vec<Segment> = result
                 .tokens
@@ -272,7 +272,7 @@ async fn transcribe(
                 text: result.text,
                 segments,
             };
-            Ok(Json(response).into_response())
+            Json(response).into_response()
         }
         "srt" => {
             let mut srt = String::new();
@@ -281,7 +281,7 @@ async fn transcribe(
                 let end = format_srt_time(token.end);
                 srt.push_str(&format!("{}\n{} --> {}\n{}\n\n", i + 1, start, end, token.text));
             }
-            Ok((StatusCode::OK, srt).into_response())
+            (StatusCode::OK, srt).into_response()
         }
         "vtt" => {
             let mut vtt = String::from("WEBVTT\n\n");
@@ -290,10 +290,12 @@ async fn transcribe(
                 let end = format_vtt_time(token.end);
                 vtt.push_str(&format!("{} --> {}\n{}\n\n", start, end, token.text));
             }
-            Ok((StatusCode::OK, vtt).into_response())
+            (StatusCode::OK, vtt).into_response()
         }
-        _ => Ok(Json(TranscriptionResponse { text }).into_response()),
-    }
+        _ => Json(TranscriptionResponse { text }).into_response(),
+    };
+
+    Ok(response)
 }
 
 fn format_srt_time(seconds: f32) -> String {
