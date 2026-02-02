@@ -29,6 +29,8 @@ const DEFAULT_PORT: &str = "8000";
 const DEFAULT_DB_PATH: &str = "/data/transcriptions.db";
 const MAX_UPLOAD_SIZE: usize = 100 * 1024 * 1024; // 100MB
 const MAX_QUEUE_SIZE: usize = 100;
+const MAX_AUDIO_DURATION_SECS: usize = 480; // 8 minutes max to avoid ONNX runtime crashes
+const SAMPLE_RATE: usize = 16000;
 
 // Job status enum
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -703,6 +705,18 @@ async fn submit_transcription(
                 .into_response()
         }
     };
+
+    // Check audio duration (max 8 minutes to avoid ONNX runtime crashes)
+    let duration_secs = samples.len() / SAMPLE_RATE;
+    if duration_secs > MAX_AUDIO_DURATION_SECS {
+        let duration_mins = duration_secs / 60;
+        let max_mins = MAX_AUDIO_DURATION_SECS / 60;
+        return create_error_response(&format!(
+            "Audio too long: {} minutes. Maximum allowed: {} minutes. Please split the audio into smaller segments.",
+            duration_mins, max_mins
+        ))
+        .into_response();
+    }
 
     // Create job
     let job_id = Uuid::new_v4().to_string();
