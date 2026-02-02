@@ -145,64 +145,58 @@ async fn list_models() -> Json<ModelsResponse> {
 async fn transcribe(
     State(state): State<AppState>,
     mut multipart: Multipart,
-) -> Result<impl IntoResponse, impl IntoResponse> {
+) -> axum::response::Response {
     let mut audio_data: Option<Vec<u8>> = None;
     let mut original_filename: Option<String> = None;
     let mut params = TranscriptionParams::default();
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| create_error_response(&format!("Failed to read multipart field: {}", e)))?
-    {
+    while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
 
         match name.as_str() {
             "file" => {
                 original_filename = field.file_name().map(|s| s.to_string());
-                audio_data = Some(
-                    field
-                        .bytes()
-                        .await
-                        .map_err(|e| create_error_response(&format!("Failed to read file: {}", e)))?
-                        .to_vec(),
-                );
+                match field.bytes().await {
+                    Ok(bytes) => audio_data = Some(bytes.to_vec()),
+                    Err(e) => {
+                        return create_error_response(&format!("Failed to read file: {}", e))
+                            .into_response()
+                    }
+                }
             }
             "model" => {
-                let value = field.text().await.map_err(|e| {
-                    create_error_response(&format!("Failed to read model: {}", e))
-                })?;
-                params.model = Some(value);
+                if let Ok(value) = field.text().await {
+                    params.model = Some(value);
+                }
             }
             "language" => {
-                let value = field.text().await.map_err(|e| {
-                    create_error_response(&format!("Failed to read language: {}", e))
-                })?;
-                params.language = Some(value);
+                if let Ok(value) = field.text().await {
+                    params.language = Some(value);
+                }
             }
             "prompt" => {
-                let value = field.text().await.map_err(|e| {
-                    create_error_response(&format!("Failed to read prompt: {}", e))
-                })?;
-                params.prompt = Some(value);
+                if let Ok(value) = field.text().await {
+                    params.prompt = Some(value);
+                }
             }
             "response_format" => {
-                let value = field.text().await.map_err(|e| {
-                    create_error_response(&format!("Failed to read response_format: {}", e))
-                })?;
-                params.response_format = Some(value);
+                if let Ok(value) = field.text().await {
+                    params.response_format = Some(value);
+                }
             }
             "temperature" => {
-                let value = field.text().await.map_err(|e| {
-                    create_error_response(&format!("Failed to read temperature: {}", e))
-                })?;
-                params.temperature = value.parse().ok();
+                if let Ok(value) = field.text().await {
+                    params.temperature = value.parse().ok();
+                }
             }
             _ => {}
         }
     }
 
-    let audio_data = audio_data.ok_or_else(|| create_error_response("No audio file provided"))?;
+    let audio_data = match audio_data {
+        Some(data) => data,
+        None => return create_error_response("No audio file provided").into_response(),
+    };
     let filename = original_filename.unwrap_or_else(|| "audio.wav".to_string());
 
     info!(
@@ -213,9 +207,13 @@ async fn transcribe(
     );
 
     // Convert audio to required format
-    let samples = convert_to_samples(&audio_data, &filename)
-        .await
-        .map_err(|e| create_error_response(&format!("Failed to process audio: {}", e)))?;
+    let samples = match convert_to_samples(&audio_data, &filename).await {
+        Ok(s) => s,
+        Err(e) => {
+            return create_error_response(&format!("Failed to process audio: {}", e))
+                .into_response()
+        }
+    };
 
     // Transcribe
     let result = {
@@ -224,19 +222,24 @@ async fn transcribe(
         // Initialize engine if not already done
         if engine_guard.is_none() {
             info!("Loading Parakeet model from {:?}", state.model_path);
-            let engine = Parakeet::from_pretrained(
-                state.model_path.to_str().unwrap_or("."),
-                None,
-            )
-            .map_err(|e| create_error_response(&format!("Failed to load model: {}", e)))?;
-            *engine_guard = Some(engine);
+            match Parakeet::from_pretrained(state.model_path.to_str().unwrap_or("."), None) {
+                Ok(engine) => *engine_guard = Some(engine),
+                Err(e) => {
+                    return create_error_response(&format!("Failed to load model: {}", e))
+                        .into_response()
+                }
+            }
         }
 
         let engine = engine_guard.as_mut().unwrap();
 
-        engine
-            .transcribe_samples(samples, 16000, 1, Some(TimestampMode::Words))
-            .map_err(|e| create_error_response(&format!("Transcription failed: {}", e)))?
+        match engine.transcribe_samples(samples, 16000, 1, Some(TimestampMode::Words)) {
+            Ok(r) => r,
+            Err(e) => {
+                return create_error_response(&format!("Transcription failed: {}", e))
+                    .into_response()
+            }
+        }
     };
 
     let text = result.text.clone();
@@ -244,7 +247,7 @@ async fn transcribe(
 
     let response_format = params.response_format.as_deref().unwrap_or("json");
 
-    let response = match response_format {
+    match response_format {
         "text" => (StatusCode::OK, text).into_response(),
         "verbose_json" => {
             let segments: Vec<Segment> = result
@@ -265,14 +268,14 @@ async fn transcribe(
                 })
                 .collect();
 
-            let response = VerboseTranscriptionResponse {
+            let verbose = VerboseTranscriptionResponse {
                 task: "transcribe".to_string(),
                 language: params.language.unwrap_or_else(|| "en".to_string()),
                 duration: result.tokens.last().map(|t| t.end as f64).unwrap_or(0.0),
                 text: result.text,
                 segments,
             };
-            Json(response).into_response()
+            Json(verbose).into_response()
         }
         "srt" => {
             let mut srt = String::new();
@@ -293,9 +296,7 @@ async fn transcribe(
             (StatusCode::OK, vtt).into_response()
         }
         _ => Json(TranscriptionResponse { text }).into_response(),
-    };
-
-    Ok(response)
+    }
 }
 
 fn format_srt_time(seconds: f32) -> String {
