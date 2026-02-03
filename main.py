@@ -33,6 +33,7 @@ PORT = int(os.getenv("PORT", "8000"))
 DB_PATH = os.getenv("DB_PATH", "/data/transcriptions.db")
 MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE", "100"))
 MAX_AUDIO_DURATION_SECS = int(os.getenv("MAX_AUDIO_DURATION_SECS", "480"))  # 8 minutes
+TEXT_RETENTION_DAYS = int(os.getenv("TEXT_RETENTION_DAYS", "365"))  # 1 year
 SAMPLE_RATE = 16000
 
 # Logging setup
@@ -94,13 +95,45 @@ def init_database(db_path: str):
             error TEXT,
             created_at INTEGER NOT NULL,
             completed_at INTEGER,
+            last_lookup INTEGER,
             UNIQUE(user_uuid, message_id)
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_message ON transcriptions(user_uuid, message_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_last_lookup ON transcriptions(last_lookup)")
+
+    # Migration: add last_lookup column if it doesn't exist (for existing databases)
+    try:
+        conn.execute("ALTER TABLE transcriptions ADD COLUMN last_lookup INTEGER")
+        logger.info("Added last_lookup column to existing database")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     conn.commit()
     conn.close()
     logger.info(f"Database initialized at {db_path}")
+
+    # Run cleanup on startup
+    cleanup_old_texts()
+
+
+def cleanup_old_texts():
+    """Remove text from transcriptions not accessed in TEXT_RETENTION_DAYS"""
+    cutoff_time = int(time.time()) - (TEXT_RETENTION_DAYS * 24 * 60 * 60)
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute(
+        """UPDATE transcriptions
+           SET text = NULL
+           WHERE text IS NOT NULL
+           AND (last_lookup IS NULL OR last_lookup < ?)
+           AND created_at < ?""",
+        (cutoff_time, cutoff_time)
+    )
+    cleaned = cursor.rowcount
+    conn.commit()
+    conn.close()
+    if cleaned > 0:
+        logger.info(f"Cleaned up text from {cleaned} old transcriptions (not accessed in {TEXT_RETENTION_DAYS} days)")
 
 
 def db_insert(job: Job):
@@ -146,7 +179,7 @@ def db_update_failed(job_id: str, error: str):
     conn.close()
 
 
-def db_find_by_user_and_message(user_uuid: str, message_id: str) -> Optional[dict]:
+def db_find_by_user_and_message(user_uuid: str, message_id: str, update_lookup: bool = True) -> Optional[dict]:
     """Find transcription by user_uuid and message_id"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -155,6 +188,15 @@ def db_find_by_user_and_message(user_uuid: str, message_id: str) -> Optional[dic
         (user_uuid, message_id)
     )
     row = cursor.fetchone()
+
+    # Update last_lookup timestamp if record found and update requested
+    if row and update_lookup:
+        conn.execute(
+            "UPDATE transcriptions SET last_lookup = ? WHERE user_uuid = ? AND message_id = ?",
+            (int(time.time()), user_uuid, message_id)
+        )
+        conn.commit()
+
     conn.close()
     return dict(row) if row else None
 

@@ -405,3 +405,5 @@ GET /v1/models
 5. **Formats audio** : WAV, MP3, FLAC, OGG sont supportés. La conversion en 16kHz mono est automatique.
 
 6. **Durée maximum** : Les fichiers audio sont limités à 8 minutes (480 secondes).
+
+7. **Rétention du texte** : Le texte des transcriptions non consultées depuis plus d'un an (365 jours) est automatiquement supprimé au démarrage du serveur. Les métadonnées (user_uuid, message_id, status) sont conservées.
