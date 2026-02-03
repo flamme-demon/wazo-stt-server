@@ -23,7 +23,7 @@ COPY main.py .
 RUN mkdir -p /data
 
 # Environment variables
-ENV MODEL_NAME=nemo-parakeet-tdt-0.6b-v2
+ENV MODEL_NAME=nemo-parakeet-tdt-0.6b-v3
 ENV HOST=0.0.0.0
 ENV PORT=8000
 ENV DB_PATH=/data/transcriptions.db
