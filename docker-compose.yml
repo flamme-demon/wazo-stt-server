@@ -1,5 +1,5 @@
 services:
-  wazo-stt:
+  wazo-stt-server:
     build:
       context: .
       dockerfile: Dockerfile
@@ -8,81 +8,25 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - models:/models
       - data:/data
+      - model-cache:/root/.cache
     environment:
-      - MODEL_PATH=/models/parakeet
+      - MODEL_NAME=nemo-parakeet-tdt-0.6b-v3
       - DB_PATH=/data/transcriptions.db
       - HOST=0.0.0.0
       - PORT=8000
-      - RUST_LOG=info
+      - MAX_QUEUE_SIZE=100
+      - MAX_AUDIO_DURATION_SECS=480
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
-
-  model-downloader:
-    image: alpine:latest
-    container_name: model-downloader
-    volumes:
-      - models:/models
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -e
-        apk add --no-cache curl tar
-
-        MODEL_DIR=/models/parakeet
-        MODEL_URL="https://blob.handy.computer/parakeet-v3-int8.tar.gz"
-
-        echo "=== Parakeet Model Downloader ==="
-        echo "Model directory: $$MODEL_DIR"
-
-        mkdir -p "$$MODEL_DIR"
-
-        # Check if model already exists
-        if [ -f "$$MODEL_DIR/encoder-model.int8.onnx" ]; then
-          echo "Model already downloaded."
-          ls -lh "$$MODEL_DIR"
-          exit 0
-        fi
-
-        echo ""
-        echo "Downloading Parakeet TDT v3 int8 from handy.computer..."
-        echo ""
-
-        cd /models
-        curl -L --progress-bar -o parakeet-v3-int8.tar.gz "$$MODEL_URL"
-
-        echo "Extracting model..."
-        tar -xzf parakeet-v3-int8.tar.gz
-
-        # Find and move extracted files to correct location
-        EXTRACTED_DIR=$$(find /models -maxdepth 1 -type d -name "parakeet*" ! -name "parakeet" | head -1)
-        if [ -n "$$EXTRACTED_DIR" ] && [ "$$EXTRACTED_DIR" != "$$MODEL_DIR" ]; then
-          echo "Moving files from $$EXTRACTED_DIR to $$MODEL_DIR"
-          mv "$$EXTRACTED_DIR"/* "$$MODEL_DIR/" 2>/dev/null || true
-          rm -rf "$$EXTRACTED_DIR"
-        fi
-
-        # Clean up macOS metadata files
-        rm -f "$$MODEL_DIR"/._*
-
-        rm -f parakeet-v3-int8.tar.gz
-
-        echo ""
-        echo "=== Download Complete ==="
-        echo "Model files in $$MODEL_DIR:"
-        ls -lh "$$MODEL_DIR"
-        echo ""
-    profiles:
-      - setup
+      start_period: 120s
 
 volumes:
-  models:
-    name: wazo-stt-models
   data:
     name: wazo-stt-data
+  model-cache:
+    name: wazo-stt-model-cache

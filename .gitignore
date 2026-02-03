@@ -1,23 +1,58 @@
-# Rust
-/target/
-Cargo.lock
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
 
 # Environment
 .env
 .env.local
 
-# Models (downloaded separately)
-/models/
+# Data
+*.db
+*.sqlite
+*.sqlite3
+/data/
+
+# Logs
+*.log
+
+# Model cache
+.cache/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
+# Temp files
+*.tmp
+*.temp

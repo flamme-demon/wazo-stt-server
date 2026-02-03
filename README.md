@@ -1,36 +1,43 @@
 # Wazo STT Server
 
-Serveur de transcription automatique (ASR) compatible OpenAI Whisper utilisant le modèle NVIDIA Parakeet, optimisé pour l'inférence CPU.
+Serveur de transcription automatique (ASR) compatible OpenAI Whisper utilisant le modèle NVIDIA Parakeet via `onnx_asr`, optimisé pour l'inférence CPU.
 
 ## Fonctionnalités
 
 - API compatible OpenAI Whisper (`/v1/audio/transcriptions`)
-- Modèle NVIDIA Parakeet TDT 0.6B (quantifié int8 pour CPU)
+- Modèle NVIDIA Parakeet TDT 0.6B via `onnx_asr`
 - **File d'attente asynchrone** avec suivi de position
 - **Persistance SQLite** des transcriptions
 - **Lookup par user_uuid/message_id** pour éviter les re-transcriptions
 - **Fetch audio depuis URL** (Wazo, etc.)
-- Support multi-format audio (WAV, MP3, FLAC, OGG)
+- Support multi-format audio (WAV, MP3, FLAC, OGG, etc.)
+- Normalisation audio automatique
 - Conversion automatique (16kHz, mono)
 - Formats de sortie : JSON, text, SRT, VTT, verbose_json
 
 ## Démarrage rapide
 
-### 1. Télécharger le modèle
+### Avec Docker (recommandé)
 
 ```bash
-docker compose --profile setup run model-downloader
+# Construire et démarrer
+docker compose up -d --build
 ```
 
-### 2. Démarrer le serveur
-
-```bash
-docker compose up -d
-```
-
+Le modèle est téléchargé automatiquement au premier lancement.
 Le serveur est disponible sur `http://localhost:8000`.
 
-## Utilisation basique
+### Sans Docker
+
+```bash
+# Installer les dépendances
+pip install -r requirements.txt
+
+# Lancer le serveur
+python main.py
+```
+
+## Utilisation
 
 ### Transcrire un fichier audio
 
@@ -50,6 +57,16 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -F "message_id=msg-456"
 ```
 
+### Forcer la re-transcription
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F "url=https://example.com/audio.wav" \
+  -F "user_uuid=abc-123" \
+  -F "message_id=msg-456" \
+  -F "force=true"
+```
+
 ### Vérifier si une transcription existe
 
 ```bash
@@ -62,6 +79,12 @@ curl "http://localhost:8000/v1/audio/transcriptions/lookup?user_uuid=abc-123&mes
 curl http://localhost:8000/v1/audio/transcriptions/{job_id}
 ```
 
+### Récupérer le résultat
+
+```bash
+curl http://localhost:8000/v1/audio/transcriptions/{job_id}/result
+```
+
 ## Documentation API
 
 Voir [API.md](API.md) pour la documentation complète de l'API.
@@ -70,44 +93,33 @@ Voir [API.md](API.md) pour la documentation complète de l'API.
 
 | Variable | Défaut | Description |
 |----------|--------|-------------|
-| `MODEL_PATH` | `/models/parakeet` | Chemin vers les fichiers du modèle |
+| `MODEL_NAME` | `nemo-parakeet-tdt-0.6b-v3` | Nom du modèle onnx_asr |
 | `DB_PATH` | `/data/transcriptions.db` | Chemin de la base SQLite |
 | `HOST` | `0.0.0.0` | Adresse de bind |
 | `PORT` | `8000` | Port du serveur |
-| `RUST_LOG` | `info` | Niveau de log |
+| `MAX_QUEUE_SIZE` | `100` | Taille max de la file d'attente |
+| `MAX_AUDIO_DURATION_SECS` | `480` | Durée max audio (8 min) |
 
 ## Volumes Docker
 
 | Volume | Chemin | Description |
 |--------|--------|-------------|
-| `wazo-stt-models` | `/models` | Fichiers du modèle Parakeet |
 | `wazo-stt-data` | `/data` | Base de données SQLite |
+| `wazo-stt-model-cache` | `/root/.cache` | Cache du modèle onnx_asr |
 
 ## Performance
 
-Avec Parakeet TDT 0.6B int8 :
-- ~5-20x temps réel sur CPU moderne
-- ~622MB taille du modèle (encoder)
+- Transcription ~5-20x temps réel sur CPU moderne
 - ~2GB RAM utilisée
+- Le modèle est téléchargé et mis en cache au premier lancement
 
-## Compilation depuis les sources
+## Stack technique
 
-### Prérequis
-
-- Rust 1.85+
-- Dépendances : `pkg-config`, `libssl-dev`, `cmake`
-
-### Build
-
-```bash
-cargo build --release
-```
-
-### Run
-
-```bash
-MODEL_PATH=./models/parakeet DB_PATH=./data/transcriptions.db cargo run --release
-```
+- **Python 3.11** + FastAPI
+- **onnx_asr** pour la transcription (NVIDIA Parakeet)
+- **pydub** pour le traitement audio
+- **SQLite** pour la persistance
+- **Docker** pour le déploiement
 
 ## License
 

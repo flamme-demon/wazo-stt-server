@@ -1,65 +1,40 @@
-# Build stage - use trixie for glibc 2.38+ (required by ort)
-FROM rust:1.93-trixie AS builder
+# Python STT Server with onnx_asr
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install build dependencies
+# Install system dependencies for audio processing
 RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    cmake \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy manifests
-COPY Cargo.toml ./
-
-# Create a dummy main.rs to cache dependencies
-RUN mkdir -p src && \
-    echo "fn main() {}" > src/main.rs
-
-# Build dependencies only
-RUN cargo build --release && rm -rf src
-
-# Copy actual source code
-COPY src ./src
-
-# Build the application
-RUN touch src/main.rs && cargo build --release
-
-# Runtime stage - use trixie for glibc 2.38+ compatibility
-FROM debian:trixie-slim
-
-WORKDIR /app
-
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    libssl3 \
+    ffmpeg \
+    libsndfile1 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the binary
-COPY --from=builder /app/target/release/wazo-stt-server /app/wazo-stt-server
+# Copy requirements first for better caching
+COPY requirements.txt .
 
-# Create models directory
-RUN mkdir -p /models/parakeet
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Download Parakeet model script
-COPY scripts/download-model.sh /app/scripts/download-model.sh
-RUN chmod +x /app/scripts/download-model.sh
+# Copy application code
+COPY main.py .
+
+# Create data directory for SQLite
+RUN mkdir -p /data
 
 # Environment variables
-ENV MODEL_PATH=/models/parakeet
+ENV MODEL_NAME=nemo-parakeet-tdt-0.6b-v2
 ENV HOST=0.0.0.0
 ENV PORT=8000
-ENV RUST_LOG=info
+ENV DB_PATH=/data/transcriptions.db
+ENV PYTHONUNBUFFERED=1
 
 # Expose port
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Run the server
-CMD ["/app/wazo-stt-server"]
+CMD ["python", "main.py"]
