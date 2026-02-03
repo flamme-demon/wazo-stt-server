@@ -99,6 +99,7 @@ Voir [API.md](API.md) pour la documentation complète de l'API.
 | `PORT` | `8000` | Port du serveur |
 | `MAX_QUEUE_SIZE` | `100` | Taille max de la file d'attente |
 | `MAX_AUDIO_DURATION_SECS` | `480` | Durée max audio (8 min) |
+| `TEXT_RETENTION_DAYS` | `365` | Durée de rétention du texte (jours) |
 
 ## Volumes Docker
 
