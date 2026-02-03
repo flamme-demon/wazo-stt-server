@@ -275,8 +275,8 @@ GET /health
 ```json
 {
   "status": "healthy",
-  "model": "/models/parakeet",
-  "version": "0.1.0",
+  "model": "nemo-parakeet-tdt-0.6b-v3",
+  "version": "1.0.0",
   "queue_length": 0,
   "db_stats": {
     "total": 150,
@@ -403,3 +403,5 @@ GET /v1/models
 4. **Certificats** : Les certificats auto-signés sont acceptés pour les environnements de développement.
 
 5. **Formats audio** : WAV, MP3, FLAC, OGG sont supportés. La conversion en 16kHz mono est automatique.
+
+6. **Durée maximum** : Les fichiers audio sont limités à 8 minutes (480 secondes).

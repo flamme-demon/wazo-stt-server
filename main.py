@@ -300,7 +300,6 @@ async def job_worker():
         base_model = onnx_asr.load_model(MODEL_NAME, providers=["CPUExecutionProvider"])
         model = base_model.with_timestamps()
         logger.info(f"Model {MODEL_NAME} loaded successfully")
-        logger.info(f"Model type: {type(model)}, methods: {[m for m in dir(model) if not m.startswith('_')]}")
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         return
