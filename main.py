@@ -26,6 +26,14 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from pydub import AudioSegment
 from pydub.effects import normalize
 
+# Optional pyannote for diarization
+try:
+    from pyannote.audio import Pipeline as DiarizationPipeline
+    PYANNOTE_AVAILABLE = True
+except ImportError:
+    PYANNOTE_AVAILABLE = False
+    DiarizationPipeline = None
+
 # Configuration
 MODEL_NAME = os.getenv("MODEL_NAME", "nemo-parakeet-tdt-0.6b-v3")
 HOST = os.getenv("HOST", "0.0.0.0")
@@ -34,6 +42,7 @@ DB_PATH = os.getenv("DB_PATH", "/data/transcriptions.db")
 MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE", "100"))
 MAX_AUDIO_DURATION_SECS = int(os.getenv("MAX_AUDIO_DURATION_SECS", "480"))  # 8 minutes
 TEXT_RETENTION_DAYS = int(os.getenv("TEXT_RETENTION_DAYS", "365"))  # 1 year
+ENABLE_DIARIZATION = os.getenv("ENABLE_DIARIZATION", "false").lower() == "true"
 SAMPLE_RATE = 16000
 
 # Logging setup
@@ -76,6 +85,7 @@ jobs: dict[str, Job] = {}
 job_queue: deque[str] = deque()
 job_queue_condition: asyncio.Condition = None
 model = None  # onnx_asr model instance
+diarization_pipeline = None  # pyannote diarization pipeline
 db_lock: asyncio.Lock = None
 
 
@@ -309,6 +319,57 @@ def transcribe_audio(audio: AudioSegment) -> TranscriptionResult:
         os.unlink(temp_path)
 
 
+def diarize_audio(audio_path: str) -> list[dict]:
+    """Perform speaker diarization on audio file"""
+    global diarization_pipeline
+
+    if not diarization_pipeline:
+        return []
+
+    try:
+        diarization = diarization_pipeline(audio_path)
+        speakers = []
+        for turn, _, speaker in diarization.itertracks(yield_label=True):
+            speakers.append({
+                "speaker": speaker,
+                "start": turn.start,
+                "end": turn.end
+            })
+        return speakers
+    except Exception as e:
+        logger.warning(f"Diarization failed: {e}")
+        return []
+
+
+def merge_transcription_with_diarization(
+    segments: list[dict],
+    diarization: list[dict]
+) -> list[dict]:
+    """Merge transcription segments with speaker diarization"""
+    if not diarization:
+        return segments
+
+    merged = []
+    for seg in segments:
+        seg_start = seg.get("start", 0)
+        seg_end = seg.get("end", 0)
+        seg_mid = (seg_start + seg_end) / 2
+
+        # Find the speaker active at the segment midpoint
+        speaker = "UNKNOWN"
+        for d in diarization:
+            if d["start"] <= seg_mid <= d["end"]:
+                speaker = d["speaker"]
+                break
+
+        merged.append({
+            **seg,
+            "speaker": speaker
+        })
+
+    return merged
+
+
 async def fetch_audio_from_url(url: str) -> tuple[bytes, str]:
     """Fetch audio from URL"""
     async with httpx.AsyncClient(verify=False, timeout=60.0) as client:
@@ -333,18 +394,33 @@ async def fetch_audio_from_url(url: str) -> tuple[bytes, str]:
 # Background worker
 async def job_worker():
     """Background worker that processes transcription jobs"""
-    global model, job_queue_condition
+    global model, diarization_pipeline, job_queue_condition
 
     logger.info("Job worker starting, loading model...")
 
     try:
-        # Load model with CPU provider
+        # Load model with CPU provider, VAD, and timestamps
         base_model = onnx_asr.load_model(MODEL_NAME, providers=["CPUExecutionProvider"])
-        model = base_model.with_timestamps()
-        logger.info(f"Model {MODEL_NAME} loaded successfully")
+        model = base_model.with_vad().with_timestamps()
+        logger.info(f"Model {MODEL_NAME} loaded successfully with Silero VAD")
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         return
+
+    # Load diarization pipeline if enabled
+    if ENABLE_DIARIZATION:
+        if PYANNOTE_AVAILABLE:
+            try:
+                logger.info("Loading pyannote diarization pipeline...")
+                diarization_pipeline = DiarizationPipeline.from_pretrained(
+                    "pyannote/speaker-diarization-3.1"
+                )
+                logger.info("Diarization pipeline loaded successfully")
+            except Exception as e:
+                logger.warning(f"Failed to load diarization pipeline: {e}")
+                logger.warning("Diarization will be disabled")
+        else:
+            logger.warning("pyannote not installed, diarization disabled")
 
     logger.info("Job worker ready, waiting for jobs...")
 
@@ -719,6 +795,130 @@ async def get_job_result(job_id: str, response_format: str = Query(default="json
         return JSONResponse(status_code=202, content={"status": status.value, "message": msg})
 
     raise HTTPException(status_code=500, detail="Unknown job status")
+
+
+@app.post("/v1/audio/recordings")
+async def transcribe_recording(
+    file: Optional[UploadFile] = File(None),
+    url: Optional[str] = Form(None),
+    diarize: Optional[str] = Form("true"),
+    response_format: Optional[str] = Form("json"),
+):
+    """
+    Transcribe a call recording with optional speaker diarization.
+    This is a synchronous endpoint - returns result directly.
+    """
+    global model, diarization_pipeline
+
+    if not model:
+        raise HTTPException(status_code=503, detail="Model not loaded yet")
+
+    enable_diarization = diarize in ("true", "1", True)
+
+    # Get audio data
+    if file:
+        audio_data = await file.read()
+        filename = file.filename or "audio.wav"
+        logger.info(f"Recording: received file {filename}, {len(audio_data)} bytes")
+    elif url:
+        logger.info(f"Recording: fetching from URL")
+        try:
+            audio_data, filename = await fetch_audio_from_url(url)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to fetch audio: {e}")
+    else:
+        raise HTTPException(status_code=400, detail="No audio file or URL provided")
+
+    try:
+        # Process audio
+        audio, duration = process_audio(audio_data, filename)
+
+        if duration > MAX_AUDIO_DURATION_SECS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Audio too long: {duration/60:.1f} min. Max: {MAX_AUDIO_DURATION_SECS/60:.0f} min."
+            )
+
+        # Save processed audio for transcription
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            audio.export(f.name, format="wav")
+            temp_path = f.name
+
+        try:
+            # Transcribe
+            result = model.recognize(temp_path)
+
+            segments = []
+            if hasattr(result, 'segments') and result.segments:
+                for i, seg in enumerate(result.segments):
+                    segments.append({
+                        "id": i,
+                        "start": seg.start if hasattr(seg, 'start') else 0,
+                        "end": seg.end if hasattr(seg, 'end') else 0,
+                        "text": seg.text if hasattr(seg, 'text') else str(seg)
+                    })
+
+            text = result.text if hasattr(result, 'text') else str(result)
+
+            # Perform diarization if enabled and available
+            speakers = []
+            if enable_diarization and diarization_pipeline:
+                logger.info("Performing speaker diarization...")
+                speakers = diarize_audio(temp_path)
+                segments = merge_transcription_with_diarization(segments, speakers)
+                logger.info(f"Found {len(set(s['speaker'] for s in speakers))} speakers")
+
+        finally:
+            os.unlink(temp_path)
+
+        # Format response
+        if response_format == "text":
+            if segments and any("speaker" in s for s in segments):
+                # Format with speaker labels
+                lines = []
+                current_speaker = None
+                for seg in segments:
+                    speaker = seg.get("speaker", "UNKNOWN")
+                    if speaker != current_speaker:
+                        lines.append(f"\n[{speaker}]")
+                        current_speaker = speaker
+                    lines.append(seg.get("text", ""))
+                return PlainTextResponse("\n".join(lines))
+            return PlainTextResponse(text)
+
+        elif response_format == "verbose_json":
+            return {
+                "task": "transcribe",
+                "duration": duration,
+                "text": text,
+                "segments": segments,
+                "speakers": list(set(s.get("speaker") for s in segments if "speaker" in s)),
+                "diarization_enabled": enable_diarization and diarization_pipeline is not None
+            }
+
+        else:  # json
+            return {
+                "text": text,
+                "segments": segments if segments else None,
+                "duration": duration,
+                "diarization_enabled": enable_diarization and diarization_pipeline is not None
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Recording transcription failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/v1/audio/recordings/status")
+async def recording_status():
+    """Get recording endpoint status"""
+    return {
+        "available": model is not None,
+        "diarization_available": diarization_pipeline is not None,
+        "diarization_model": "pyannote/speaker-diarization-3.1" if diarization_pipeline else None
+    }
 
 
 def format_srt_time(seconds: float) -> str:

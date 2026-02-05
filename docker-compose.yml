@@ -18,6 +18,7 @@ services:
       - MAX_QUEUE_SIZE=100
       - MAX_AUDIO_DURATION_SECS=480
       - TEXT_RETENTION_DAYS=365
+      # - ENABLE_DIARIZATION=true  # Uncomment to enable pyannote diarization
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
