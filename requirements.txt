@@ -3,10 +3,8 @@ fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
 
-# ASR engine (same as HuggingFace space)
-onnx-asr[cpu,hub]>=0.6.1
-# Pin onnxruntime to avoid external data path validation issue (introduced in 1.17+)
-onnxruntime<1.17
+# ASR engine
+onnx-asr[cpu,hub]>=0.10.2
 
 # Audio processing
 pydub>=0.25.1
