@@ -4,7 +4,8 @@ uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
 
 # ASR engine
-onnx-asr[cpu,hub]>=0.10.2
+# onnx-asr 0.6.x is compatible with onnxruntime < 1.17
+onnx-asr[cpu,hub]>=0.6.1,<0.10
 # Pin onnxruntime < 1.17 to avoid external data path validation issue
 onnxruntime<1.17
 
