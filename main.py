@@ -35,7 +35,7 @@ except ImportError:
     DiarizationPipeline = None
 
 # Configuration
-MODEL_NAME = os.getenv("MODEL_NAME", "istupakov/parakeet-tdt-0.6b-v3-onnx")
+MODEL_PATH = os.getenv("MODEL_PATH", "/models/parakeet")  # Local path to downloaded model
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
 DB_PATH = os.getenv("DB_PATH", "/data/transcriptions.db")
@@ -400,10 +400,10 @@ async def job_worker():
 
     try:
         # Load model with CPU provider, VAD, and timestamps
-        logger.info(f"Loading model: {MODEL_NAME}")
-        base_model = onnx_asr.load_model(MODEL_NAME, providers=["CPUExecutionProvider"])
+        logger.info(f"Loading model from: {MODEL_PATH}")
+        base_model = onnx_asr.load_model(MODEL_PATH, providers=["CPUExecutionProvider"])
         model = base_model.with_vad().with_timestamps()
-        logger.info(f"Model {MODEL_NAME} loaded successfully with Silero VAD")
+        logger.info(f"Model loaded successfully with Silero VAD")
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         return
