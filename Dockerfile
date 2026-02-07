@@ -28,11 +28,13 @@ RUN mkdir -p /data /models
 RUN python -c "import onnx_asr; onnx_asr.load_model('nemo-parakeet-tdt-0.6b-v3', '/models/parakeet')"
 
 # Environment variables
+ENV MODEL_NAME=nemo-parakeet-tdt-0.6b-v3
 ENV MODEL_PATH=/models/parakeet
 ENV HOST=0.0.0.0
 ENV PORT=8000
 ENV DB_PATH=/data/transcriptions.db
 ENV PYTHONUNBUFFERED=1
+ENV ENABLE_DIARIZATION=true
 
 # Expose port
 EXPOSE 8000
