@@ -404,7 +404,9 @@ async def job_worker():
         # Use local path as second argument to load from/cache to that directory
         logger.info(f"Loading model {MODEL_NAME} from: {MODEL_PATH}")
         base_model = onnx_asr.load_model(MODEL_NAME, MODEL_PATH, providers=["CPUExecutionProvider"])
-        model = base_model.with_vad().with_timestamps()
+        # Load Silero VAD separately (required in onnx_asr 0.10+)
+        vad = onnx_asr.load_vad("silero")
+        model = base_model.with_vad(vad).with_timestamps()
         logger.info(f"Model {MODEL_NAME} loaded successfully with Silero VAD")
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
