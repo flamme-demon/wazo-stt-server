@@ -24,12 +24,14 @@ COPY main.py .
 # Create directories
 RUN mkdir -p /data /models
 
-# Download the model locally during build to avoid HuggingFace cache path issues
-RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('istupakov/parakeet-tdt-0.6b-v3-onnx', local_dir='/models/parakeet')"
+# Set HuggingFace cache to /models to avoid symlink issues
+ENV HF_HOME=/models
+
+# Pre-download the model during build (will be cached in /models)
+RUN python -c "import onnx_asr; onnx_asr.load_model('istupakov/parakeet-tdt-0.6b-v3-onnx')"
 
 # Environment variables
-ENV MODEL_NAME=nemo-parakeet-tdt-0.6b-v3
-ENV MODEL_PATH=/models/parakeet
+ENV MODEL_NAME=istupakov/parakeet-tdt-0.6b-v3-onnx
 ENV HOST=0.0.0.0
 ENV PORT=8000
 ENV DB_PATH=/data/transcriptions.db
