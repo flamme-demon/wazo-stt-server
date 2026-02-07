@@ -24,8 +24,8 @@ COPY main.py .
 # Create directories
 RUN mkdir -p /data /models
 
-# Download model files directly (flat directory, no symlinks)
-RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('istupakov/parakeet-tdt-0.6b-v3-onnx', local_dir='/models/parakeet', local_dir_use_symlinks=False)"
+# Pre-download the model using onnx_asr (caches to local directory)
+RUN python -c "import onnx_asr; onnx_asr.load_model('nemo-parakeet-tdt-0.6b-v3', '/models/parakeet')"
 
 # Environment variables
 ENV MODEL_PATH=/models/parakeet

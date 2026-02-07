@@ -35,6 +35,7 @@ except ImportError:
     DiarizationPipeline = None
 
 # Configuration
+MODEL_NAME = os.getenv("MODEL_NAME", "nemo-parakeet-tdt-0.6b-v3")
 MODEL_PATH = os.getenv("MODEL_PATH", "/models/parakeet")  # Local path to downloaded model
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
@@ -400,10 +401,11 @@ async def job_worker():
 
     try:
         # Load model with CPU provider, VAD, and timestamps
-        logger.info(f"Loading model from: {MODEL_PATH}")
-        base_model = onnx_asr.load_model(MODEL_PATH, providers=["CPUExecutionProvider"])
+        # Use local path as second argument to load from/cache to that directory
+        logger.info(f"Loading model {MODEL_NAME} from: {MODEL_PATH}")
+        base_model = onnx_asr.load_model(MODEL_NAME, MODEL_PATH, providers=["CPUExecutionProvider"])
         model = base_model.with_vad().with_timestamps()
-        logger.info(f"Model loaded successfully with Silero VAD")
+        logger.info(f"Model {MODEL_NAME} loaded successfully with Silero VAD")
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         return
