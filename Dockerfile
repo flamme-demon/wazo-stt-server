@@ -30,6 +30,8 @@ ENV HOST=0.0.0.0
 ENV PORT=8000
 ENV DB_PATH=/data/transcriptions.db
 ENV PYTHONUNBUFFERED=1
+# Disable ONNX Runtime external data path validation (required for HuggingFace cached models)
+ENV ORT_DISABLE_EXTERNAL_INITIALIZERS_PATH_VALIDATION=1
 
 # Expose port
 EXPOSE 8000
