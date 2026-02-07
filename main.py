@@ -299,20 +299,35 @@ def transcribe_audio(audio: AudioSegment) -> TranscriptionResult:
 
     try:
         # Transcribe with timestamps using recognize method
+        # With VAD enabled, recognize() returns a generator that yields segments
         result = model.recognize(temp_path)
 
-        # Extract segments with timestamps
+        # Collect all segments from the generator
         segments = []
-        if hasattr(result, 'segments') and result.segments:
-            for i, seg in enumerate(result.segments):
+        all_text = []
+
+        # Iterate over the generator (VAD returns multiple segments)
+        for seg in result:
+            if hasattr(seg, 'text'):
+                all_text.append(seg.text)
                 segments.append({
-                    "id": i,
+                    "id": len(segments),
                     "start": seg.start if hasattr(seg, 'start') else 0,
                     "end": seg.end if hasattr(seg, 'end') else 0,
-                    "text": seg.text if hasattr(seg, 'text') else str(seg)
+                    "text": seg.text
                 })
+            elif hasattr(seg, 'segments') and seg.segments:
+                # Handle nested segments
+                for s in seg.segments:
+                    all_text.append(s.text if hasattr(s, 'text') else str(s))
+                    segments.append({
+                        "id": len(segments),
+                        "start": s.start if hasattr(s, 'start') else 0,
+                        "end": s.end if hasattr(s, 'end') else 0,
+                        "text": s.text if hasattr(s, 'text') else str(s)
+                    })
 
-        text = result.text if hasattr(result, 'text') else str(result)
+        text = " ".join(all_text)
         duration = segments[-1]["end"] if segments else len(audio) / 1000.0
 
         return TranscriptionResult(text=text, segments=segments, duration=duration)
@@ -850,20 +865,33 @@ async def transcribe_recording(
             temp_path = f.name
 
         try:
-            # Transcribe
+            # Transcribe - with VAD enabled, recognize() returns a generator
             result = model.recognize(temp_path)
 
             segments = []
-            if hasattr(result, 'segments') and result.segments:
-                for i, seg in enumerate(result.segments):
+            all_text = []
+
+            # Iterate over the generator (VAD returns multiple segments)
+            for seg in result:
+                if hasattr(seg, 'text'):
+                    all_text.append(seg.text)
                     segments.append({
-                        "id": i,
+                        "id": len(segments),
                         "start": seg.start if hasattr(seg, 'start') else 0,
                         "end": seg.end if hasattr(seg, 'end') else 0,
-                        "text": seg.text if hasattr(seg, 'text') else str(seg)
+                        "text": seg.text
                     })
+                elif hasattr(seg, 'segments') and seg.segments:
+                    for s in seg.segments:
+                        all_text.append(s.text if hasattr(s, 'text') else str(s))
+                        segments.append({
+                            "id": len(segments),
+                            "start": s.start if hasattr(s, 'start') else 0,
+                            "end": s.end if hasattr(s, 'end') else 0,
+                            "text": s.text if hasattr(s, 'text') else str(s)
+                        })
 
-            text = result.text if hasattr(result, 'text') else str(result)
+            text = " ".join(all_text)
 
             # Perform diarization if enabled and available
             speakers = []
