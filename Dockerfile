@@ -21,17 +21,19 @@ RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pyt
 # Copy application code
 COPY main.py .
 
-# Create data directory for SQLite
-RUN mkdir -p /data
+# Create directories
+RUN mkdir -p /data /models
+
+# Download the model locally during build to avoid HuggingFace cache path issues
+RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('istupakov/parakeet-tdt-0.6b-v3-onnx', local_dir='/models/parakeet')"
 
 # Environment variables
 ENV MODEL_NAME=nemo-parakeet-tdt-0.6b-v3
+ENV MODEL_PATH=/models/parakeet
 ENV HOST=0.0.0.0
 ENV PORT=8000
 ENV DB_PATH=/data/transcriptions.db
 ENV PYTHONUNBUFFERED=1
-# Disable ONNX Runtime external data path validation (required for HuggingFace cached models)
-ENV ORT_DISABLE_EXTERNAL_INITIALIZERS_PATH_VALIDATION=1
 
 # Expose port
 EXPOSE 8000

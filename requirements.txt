@@ -4,10 +4,7 @@ uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
 
 # ASR engine
-# Use onnx-asr without [cpu] extra to allow older onnxruntime
-onnx-asr[hub]>=0.6.1
-# Pin onnxruntime < 1.17 to avoid external data path validation issue
-onnxruntime<1.17
+onnx-asr[cpu,hub]>=0.10.2
 
 # Audio processing
 pydub>=0.25.1
