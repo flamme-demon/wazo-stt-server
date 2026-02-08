@@ -348,39 +348,44 @@ def diarize_audio(audio_path: str) -> list[dict]:
         speakers = []
 
         # Handle different pyannote.audio API versions
+        # pyannote.audio 3.x+ returns a DiarizeOutput object
+        # Try multiple ways to extract the annotation
+
+        annotation = None
+
+        # Method 1: Direct itertracks (older pyannote.audio or Annotation object)
         if hasattr(diarization, 'itertracks'):
-            # pyannote.audio < 3.x style (Annotation object)
-            for turn, _, speaker in diarization.itertracks(yield_label=True):
+            annotation = diarization
+
+        # Method 2: DiarizeOutput with speaker_diarization attribute (pyannote 3.x community pipeline)
+        elif hasattr(diarization, 'speaker_diarization'):
+            annotation = diarization.speaker_diarization
+
+        # Method 3: Check for common attribute names
+        elif hasattr(diarization, 'annotation'):
+            annotation = diarization.annotation
+        elif hasattr(diarization, '_annotation'):
+            annotation = diarization._annotation
+
+        # Method 4: Try indexed access (DiarizeOutput may be tuple-like)
+        elif hasattr(diarization, '__getitem__'):
+            try:
+                # DiarizeOutput[0] might be the annotation
+                annotation = diarization[0]
+            except (IndexError, TypeError):
+                pass
+
+        if annotation is not None and hasattr(annotation, 'itertracks'):
+            for turn, _, speaker in annotation.itertracks(yield_label=True):
                 speakers.append({
                     "speaker": speaker,
                     "start": turn.start,
                     "end": turn.end
                 })
-        elif hasattr(diarization, 'speaker_count'):
-            # pyannote.audio 3.x+ style (DiarizeOutput object)
-            # Access the annotation attribute which contains the Annotation object
-            annotation = getattr(diarization, 'annotation', None) or getattr(diarization, '_annotation', None)
-            if annotation and hasattr(annotation, 'itertracks'):
-                for turn, _, speaker in annotation.itertracks(yield_label=True):
-                    speakers.append({
-                        "speaker": speaker,
-                        "start": turn.start,
-                        "end": turn.end
-                    })
-            else:
-                # Try to iterate directly if it's iterable
-                logger.debug(f"Diarization output type: {type(diarization)}, attrs: {dir(diarization)}")
-                for item in diarization:
-                    if hasattr(item, 'start') and hasattr(item, 'end'):
-                        speakers.append({
-                            "speaker": getattr(item, 'speaker', getattr(item, 'label', 'UNKNOWN')),
-                            "start": item.start,
-                            "end": item.end
-                        })
         else:
             # Log available attributes for debugging
-            logger.warning(f"Unknown diarization output type: {type(diarization)}")
-            logger.debug(f"Available attributes: {dir(diarization)}")
+            attrs = [a for a in dir(diarization) if not a.startswith('_')]
+            logger.warning(f"Unknown diarization output type: {type(diarization)}, public attrs: {attrs}")
 
         return speakers
     except Exception as e:
