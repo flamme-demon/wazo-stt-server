@@ -18,7 +18,11 @@ services:
       - MAX_QUEUE_SIZE=100
       - MAX_AUDIO_DURATION_SECS=480
       - TEXT_RETENTION_DAYS=365
-      # - ENABLE_DIARIZATION=true  # Uncomment to enable pyannote diarization
+      - ENABLE_DIARIZATION=true
+      # HuggingFace token for pyannote diarization (required for gated model)
+      # Get your token at https://huggingface.co/settings/tokens
+      # and accept conditions at https://huggingface.co/pyannote/speaker-diarization-3.1
+      # - HF_TOKEN=hf_your_token_here
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
