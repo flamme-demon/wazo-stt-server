@@ -18,5 +18,5 @@ aiosqlite>=0.19.0
 # Utilities
 python-dotenv>=1.0.0
 
-# Speaker diarization (for call recordings)
-pyannote.audio>=3.1.0
+# Speaker diarization (community-1 requires pyannote.audio 4.x)
+pyannote.audio>=4.0.0

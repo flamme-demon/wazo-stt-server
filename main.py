@@ -37,7 +37,8 @@ except ImportError:
 # Configuration
 MODEL_NAME = os.getenv("MODEL_NAME", "nemo-parakeet-tdt-0.6b-v3")
 MODEL_PATH = os.getenv("MODEL_PATH", "/models/parakeet")  # Local path to downloaded model
-HF_TOKEN = os.getenv("HF_TOKEN", "")  # HuggingFace token for gated models (pyannote)
+HF_TOKEN = os.getenv("HF_TOKEN", "")  # HuggingFace token for pyannote models
+DIARIZATION_MODEL = os.getenv("DIARIZATION_MODEL", "pyannote/speaker-diarization-community-1")
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
 DB_PATH = os.getenv("DB_PATH", "/data/transcriptions.db")
@@ -336,56 +337,50 @@ def transcribe_audio(audio: AudioSegment) -> TranscriptionResult:
         os.unlink(temp_path)
 
 
-def diarize_audio(audio_path: str) -> list[dict]:
-    """Perform speaker diarization on audio file"""
+def diarize_audio(audio_path: str, exclusive: bool = True) -> list[dict]:
+    """Perform speaker diarization on audio file.
+
+    Args:
+        audio_path: Path to audio file
+        exclusive: If True, use exclusive mode (one speaker at a time),
+                   better for aligning with STT timestamps
+    """
     global diarization_pipeline
 
     if not diarization_pipeline:
         return []
 
     try:
-        diarization = diarization_pipeline(audio_path)
+        output = diarization_pipeline(audio_path)
         speakers = []
 
-        # Handle different pyannote.audio API versions
-        # pyannote.audio 3.x+ returns a DiarizeOutput object
-        # Try multiple ways to extract the annotation
+        # pyannote.audio 4.x (community-1): DiarizeOutput with .speaker_diarization
+        if hasattr(output, 'speaker_diarization'):
+            # Use exclusive mode for better STT alignment (one speaker at a time)
+            if exclusive and hasattr(output, 'exclusive_speaker_diarization'):
+                diarization = output.exclusive_speaker_diarization
+            else:
+                diarization = output.speaker_diarization
 
-        annotation = None
-
-        # Method 1: Direct itertracks (older pyannote.audio or Annotation object)
-        if hasattr(diarization, 'itertracks'):
-            annotation = diarization
-
-        # Method 2: DiarizeOutput with speaker_diarization attribute (pyannote 3.x community pipeline)
-        elif hasattr(diarization, 'speaker_diarization'):
-            annotation = diarization.speaker_diarization
-
-        # Method 3: Check for common attribute names
-        elif hasattr(diarization, 'annotation'):
-            annotation = diarization.annotation
-        elif hasattr(diarization, '_annotation'):
-            annotation = diarization._annotation
-
-        # Method 4: Try indexed access (DiarizeOutput may be tuple-like)
-        elif hasattr(diarization, '__getitem__'):
-            try:
-                # DiarizeOutput[0] might be the annotation
-                annotation = diarization[0]
-            except (IndexError, TypeError):
-                pass
-
-        if annotation is not None and hasattr(annotation, 'itertracks'):
-            for turn, _, speaker in annotation.itertracks(yield_label=True):
+            for turn, speaker in diarization:
                 speakers.append({
                     "speaker": speaker,
                     "start": turn.start,
                     "end": turn.end
                 })
+
+        # pyannote.audio 3.x fallback: direct Annotation object
+        elif hasattr(output, 'itertracks'):
+            for turn, _, speaker in output.itertracks(yield_label=True):
+                speakers.append({
+                    "speaker": speaker,
+                    "start": turn.start,
+                    "end": turn.end
+                })
+
         else:
-            # Log available attributes for debugging
-            attrs = [a for a in dir(diarization) if not a.startswith('_')]
-            logger.warning(f"Unknown diarization output type: {type(diarization)}, public attrs: {attrs}")
+            attrs = [a for a in dir(output) if not a.startswith('_')]
+            logger.warning(f"Unknown diarization output type: {type(output)}, attrs: {attrs}")
 
         return speakers
     except Exception as e:
@@ -469,14 +464,13 @@ async def job_worker():
     if ENABLE_DIARIZATION:
         if PYANNOTE_AVAILABLE:
             try:
-                logger.info("Loading pyannote diarization pipeline...")
-                # Use HF_TOKEN for gated model access
+                logger.info(f"Loading diarization pipeline: {DIARIZATION_MODEL}")
                 token = HF_TOKEN if HF_TOKEN else None
                 diarization_pipeline = DiarizationPipeline.from_pretrained(
-                    "pyannote/speaker-diarization-3.1",
+                    DIARIZATION_MODEL,
                     token=token
                 )
-                logger.info("Diarization pipeline loaded successfully")
+                logger.info(f"Diarization pipeline loaded: {DIARIZATION_MODEL}")
             except Exception as e:
                 logger.warning(f"Failed to load diarization pipeline: {e}")
                 logger.warning("Diarization will be disabled")
@@ -991,7 +985,7 @@ async def recording_status():
     return {
         "available": model is not None,
         "diarization_available": diarization_pipeline is not None,
-        "diarization_model": "pyannote/speaker-diarization-3.1" if diarization_pipeline else None
+        "diarization_model": DIARIZATION_MODEL if diarization_pipeline else None
     }
 
 

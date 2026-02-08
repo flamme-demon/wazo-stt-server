@@ -30,6 +30,7 @@ RUN python -c "import onnx_asr; onnx_asr.load_model('nemo-parakeet-tdt-0.6b-v3',
 # Environment variables
 ENV MODEL_NAME=nemo-parakeet-tdt-0.6b-v3
 ENV MODEL_PATH=/models/parakeet
+ENV DIARIZATION_MODEL=pyannote/speaker-diarization-community-1
 ENV HOST=0.0.0.0
 ENV PORT=8000
 ENV DB_PATH=/data/transcriptions.db
