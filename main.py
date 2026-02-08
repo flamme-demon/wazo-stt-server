@@ -37,6 +37,7 @@ except ImportError:
 # Configuration
 MODEL_NAME = os.getenv("MODEL_NAME", "nemo-parakeet-tdt-0.6b-v3")
 MODEL_PATH = os.getenv("MODEL_PATH", "/models/parakeet")  # Local path to downloaded model
+HF_TOKEN = os.getenv("HF_TOKEN", "")  # HuggingFace token for gated models (pyannote)
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
 DB_PATH = os.getenv("DB_PATH", "/data/transcriptions.db")
@@ -432,8 +433,11 @@ async def job_worker():
         if PYANNOTE_AVAILABLE:
             try:
                 logger.info("Loading pyannote diarization pipeline...")
+                # Use HF_TOKEN for gated model access
+                token = HF_TOKEN if HF_TOKEN else None
                 diarization_pipeline = DiarizationPipeline.from_pretrained(
-                    "pyannote/speaker-diarization-3.1"
+                    "pyannote/speaker-diarization-3.1",
+                    use_auth_token=token
                 )
                 logger.info("Diarization pipeline loaded successfully")
             except Exception as e:
