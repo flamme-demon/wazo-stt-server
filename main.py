@@ -437,7 +437,7 @@ async def job_worker():
                 token = HF_TOKEN if HF_TOKEN else None
                 diarization_pipeline = DiarizationPipeline.from_pretrained(
                     "pyannote/speaker-diarization-3.1",
-                    use_auth_token=token
+                    token=token
                 )
                 logger.info("Diarization pipeline loaded successfully")
             except Exception as e:
