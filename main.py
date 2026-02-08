@@ -301,16 +301,20 @@ def transcribe_audio(audio: AudioSegment) -> TranscriptionResult:
         temp_path = f.name
 
     try:
-        # Transcribe with timestamps using recognize method
-        # With VAD enabled, recognize() returns a generator that yields segments
         result = model.recognize(temp_path)
 
-        # Collect all segments from the generator
         segments = []
         all_text = []
 
-        # Iterate over the generator (VAD returns multiple segments)
-        for seg in result:
+        # With VAD: recognize() returns a generator yielding segments
+        # Without VAD: returns a single TimestampedResult object
+        try:
+            iter_result = iter(result)
+        except TypeError:
+            # Not iterable — single result (no VAD)
+            iter_result = iter([result])
+
+        for seg in iter_result:
             if hasattr(seg, 'text'):
                 all_text.append(seg.text)
                 segments.append({
@@ -320,7 +324,6 @@ def transcribe_audio(audio: AudioSegment) -> TranscriptionResult:
                     "text": seg.text
                 })
             elif hasattr(seg, 'segments') and seg.segments:
-                # Handle nested segments
                 for s in seg.segments:
                     all_text.append(s.text if hasattr(s, 'text') else str(s))
                     segments.append({
