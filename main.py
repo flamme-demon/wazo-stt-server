@@ -46,6 +46,7 @@ MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE", "100"))
 MAX_AUDIO_DURATION_SECS = int(os.getenv("MAX_AUDIO_DURATION_SECS", "480"))  # 8 minutes
 TEXT_RETENTION_DAYS = int(os.getenv("TEXT_RETENTION_DAYS", "365"))  # 1 year
 ENABLE_DIARIZATION = os.getenv("ENABLE_DIARIZATION", "false").lower() == "true"
+ENABLE_VAD = os.getenv("ENABLE_VAD", "true").lower() == "true"
 SAMPLE_RATE = 16000
 
 # Logging setup
@@ -419,14 +420,16 @@ async def job_worker():
     logger.info("Job worker starting, loading model...")
 
     try:
-        # Load model with CPU provider, VAD, and timestamps
-        # Use local path as second argument to load from/cache to that directory
+        # Load model with CPU provider and timestamps
         logger.info(f"Loading model {MODEL_NAME} from: {MODEL_PATH}")
         base_model = onnx_asr.load_model(MODEL_NAME, MODEL_PATH, providers=["CPUExecutionProvider"])
-        # Load Silero VAD separately (required in onnx_asr 0.10+)
-        vad = onnx_asr.load_vad("silero")
-        model = base_model.with_vad(vad).with_timestamps()
-        logger.info(f"Model {MODEL_NAME} loaded successfully with Silero VAD")
+        if ENABLE_VAD:
+            vad = onnx_asr.load_vad("silero")
+            model = base_model.with_vad(vad).with_timestamps()
+            logger.info(f"Model {MODEL_NAME} loaded with Silero VAD")
+        else:
+            model = base_model.with_timestamps()
+            logger.info(f"Model {MODEL_NAME} loaded without VAD")
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         return
