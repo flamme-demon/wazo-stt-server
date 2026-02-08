@@ -390,35 +390,6 @@ def diarize_audio(audio_path: str, exclusive: bool = True) -> list[dict]:
         return []
 
 
-def merge_transcription_with_diarization(
-    segments: list[dict],
-    diarization: list[dict]
-) -> list[dict]:
-    """Merge transcription segments with speaker diarization"""
-    if not diarization:
-        return segments
-
-    merged = []
-    for seg in segments:
-        seg_start = seg.get("start", 0)
-        seg_end = seg.get("end", 0)
-        seg_mid = (seg_start + seg_end) / 2
-
-        # Find the speaker active at the segment midpoint
-        speaker = "UNKNOWN"
-        for d in diarization:
-            if d["start"] <= seg_mid <= d["end"]:
-                speaker = d["speaker"]
-                break
-
-        merged.append({
-            **seg,
-            "speaker": speaker
-        })
-
-    return merged
-
-
 async def fetch_audio_from_url(url: str) -> tuple[bytes, str]:
     """Fetch audio from URL"""
     async with httpx.AsyncClient(verify=False, timeout=60.0) as client:
@@ -853,30 +824,26 @@ async def get_job_result(job_id: str, response_format: str = Query(default="json
 
 
 @app.post("/v1/audio/recordings")
-async def transcribe_recording(
+async def diarize_recording(
     file: Optional[UploadFile] = File(None),
     url: Optional[str] = Form(None),
-    diarize: Optional[str] = Form("true"),
-    response_format: Optional[str] = Form("json"),
 ):
     """
-    Transcribe a call recording with optional speaker diarization.
-    This is a synchronous endpoint - returns result directly.
+    Perform speaker diarization on a call recording.
+    Returns speaker segments with timestamps (no transcription).
     """
-    global model, diarization_pipeline
+    global diarization_pipeline
 
-    if not model:
-        raise HTTPException(status_code=503, detail="Model not loaded yet")
-
-    enable_diarization = diarize in ("true", "1", True)
+    if not diarization_pipeline:
+        raise HTTPException(status_code=503, detail="Diarization pipeline not loaded")
 
     # Get audio data
     if file:
         audio_data = await file.read()
         filename = file.filename or "audio.wav"
-        logger.info(f"Recording: received file {filename}, {len(audio_data)} bytes")
+        logger.info(f"Diarization: received file {filename}, {len(audio_data)} bytes")
     elif url:
-        logger.info(f"Recording: fetching from URL")
+        logger.info(f"Diarization: fetching from URL")
         try:
             audio_data, filename = await fetch_audio_from_url(url)
         except Exception as e:
@@ -894,97 +861,40 @@ async def transcribe_recording(
                 detail=f"Audio too long: {duration/60:.1f} min. Max: {MAX_AUDIO_DURATION_SECS/60:.0f} min."
             )
 
-        # Save processed audio for transcription
+        # Save processed audio for diarization
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             audio.export(f.name, format="wav")
             temp_path = f.name
 
         try:
-            # Transcribe - with VAD enabled, recognize() returns a generator
-            result = model.recognize(temp_path)
-
-            segments = []
-            all_text = []
-
-            # Iterate over the generator (VAD returns multiple segments)
-            for seg in result:
-                if hasattr(seg, 'text'):
-                    all_text.append(seg.text)
-                    segments.append({
-                        "id": len(segments),
-                        "start": seg.start if hasattr(seg, 'start') else 0,
-                        "end": seg.end if hasattr(seg, 'end') else 0,
-                        "text": seg.text
-                    })
-                elif hasattr(seg, 'segments') and seg.segments:
-                    for s in seg.segments:
-                        all_text.append(s.text if hasattr(s, 'text') else str(s))
-                        segments.append({
-                            "id": len(segments),
-                            "start": s.start if hasattr(s, 'start') else 0,
-                            "end": s.end if hasattr(s, 'end') else 0,
-                            "text": s.text if hasattr(s, 'text') else str(s)
-                        })
-
-            text = " ".join(all_text)
-
-            # Perform diarization if enabled and available
-            speakers = []
-            if enable_diarization and diarization_pipeline:
-                logger.info("Performing speaker diarization...")
-                speakers = diarize_audio(temp_path)
-                segments = merge_transcription_with_diarization(segments, speakers)
-                logger.info(f"Found {len(set(s['speaker'] for s in speakers))} speakers")
-
+            logger.info("Performing speaker diarization...")
+            speakers = diarize_audio(temp_path)
+            unique_speakers = sorted(set(s["speaker"] for s in speakers))
+            logger.info(f"Diarization complete: {len(unique_speakers)} speakers, {len(speakers)} segments")
         finally:
             os.unlink(temp_path)
 
-        # Format response
-        if response_format == "text":
-            if segments and any("speaker" in s for s in segments):
-                # Format with speaker labels
-                lines = []
-                current_speaker = None
-                for seg in segments:
-                    speaker = seg.get("speaker", "UNKNOWN")
-                    if speaker != current_speaker:
-                        lines.append(f"\n[{speaker}]")
-                        current_speaker = speaker
-                    lines.append(seg.get("text", ""))
-                return PlainTextResponse("\n".join(lines))
-            return PlainTextResponse(text)
-
-        elif response_format == "verbose_json":
-            return {
-                "task": "transcribe",
-                "duration": duration,
-                "text": text,
-                "segments": segments,
-                "speakers": list(set(s.get("speaker") for s in segments if "speaker" in s)),
-                "diarization_enabled": enable_diarization and diarization_pipeline is not None
-            }
-
-        else:  # json
-            return {
-                "text": text,
-                "segments": segments if segments else None,
-                "duration": duration,
-                "diarization_enabled": enable_diarization and diarization_pipeline is not None
-            }
+        return {
+            "speakers": unique_speakers,
+            "segments": [
+                {"speaker": s["speaker"], "start": s["start"], "end": s["end"]}
+                for s in speakers
+            ],
+            "duration": duration
+        }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Recording transcription failed: {e}")
+        logger.error(f"Diarization failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/v1/audio/recordings/status")
 async def recording_status():
-    """Get recording endpoint status"""
+    """Get diarization endpoint status"""
     return {
-        "available": model is not None,
-        "diarization_available": diarization_pipeline is not None,
+        "available": diarization_pipeline is not None,
         "diarization_model": DIARIZATION_MODEL if diarization_pipeline else None
     }
 
