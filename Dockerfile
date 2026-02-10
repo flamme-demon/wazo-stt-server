@@ -14,20 +14,28 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install CPU-only PyTorch and torchaudio first to avoid downloading CUDA binaries (~2-3GB)
+RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY main.py .
 
-# Create data directory for SQLite
-RUN mkdir -p /data
+# Create directories
+RUN mkdir -p /data /models
+
+# Pre-download the model using onnx_asr (caches to local directory)
+RUN python -c "import onnx_asr; onnx_asr.load_model('nemo-parakeet-tdt-0.6b-v3', '/models/parakeet')"
 
 # Environment variables
 ENV MODEL_NAME=nemo-parakeet-tdt-0.6b-v3
+ENV MODEL_PATH=/models/parakeet
+ENV DIARIZATION_MODEL=pyannote/speaker-diarization-community-1
 ENV HOST=0.0.0.0
 ENV PORT=8000
 ENV DB_PATH=/data/transcriptions.db
 ENV PYTHONUNBUFFERED=1
+ENV ENABLE_DIARIZATION=true
 
 # Expose port
 EXPOSE 8000

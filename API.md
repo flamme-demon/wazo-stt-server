@@ -289,7 +289,92 @@ GET /health
 
 ---
 
-### 7. Liste des modèles
+### 7. Transcrire un enregistrement d'appel (avec diarization)
+
+Endpoint synchrone pour transcrire des enregistrements d'appels avec identification des locuteurs.
+
+```
+POST /v1/audio/recordings
+Content-Type: multipart/form-data
+```
+
+#### Paramètres (form-data)
+
+| Paramètre | Type | Requis | Description |
+|-----------|------|--------|-------------|
+| `file` | file | Non* | Fichier audio à transcrire |
+| `url` | string | Non* | URL du fichier audio |
+| `diarize` | string | Non | `true` pour activer la diarization (défaut: true) |
+| `response_format` | string | Non | Format: `json`, `text`, `verbose_json` |
+
+*\* `file` ou `url` doit être fourni*
+
+#### Exemple
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/recordings \
+  -F "file=@recording.wav" \
+  -F "diarize=true" \
+  -F "response_format=verbose_json"
+```
+
+#### Réponse - JSON (défaut)
+
+```json
+{
+  "text": "Bonjour, comment puis-je vous aider ?",
+  "segments": [
+    {
+      "id": 0,
+      "start": 0.0,
+      "end": 2.5,
+      "text": "Bonjour",
+      "speaker": "SPEAKER_00"
+    },
+    {
+      "id": 1,
+      "start": 2.5,
+      "end": 5.0,
+      "text": "comment puis-je vous aider ?",
+      "speaker": "SPEAKER_01"
+    }
+  ],
+  "duration": 5.0,
+  "diarization_enabled": true
+}
+```
+
+#### Réponse - text (avec diarization)
+
+```
+[SPEAKER_00]
+Bonjour
+
+[SPEAKER_01]
+comment puis-je vous aider ?
+```
+
+---
+
+### 8. Statut du endpoint recordings
+
+```
+GET /v1/audio/recordings/status
+```
+
+#### Réponse
+
+```json
+{
+  "available": true,
+  "diarization_available": true,
+  "diarization_model": "pyannote/speaker-diarization-3.1"
+}
+```
+
+---
+
+### 9. Liste des modèles
 
 ```
 GET /v1/models

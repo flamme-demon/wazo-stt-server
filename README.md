@@ -6,10 +6,12 @@ Serveur de transcription automatique (ASR) compatible OpenAI Whisper utilisant l
 
 - API compatible OpenAI Whisper (`/v1/audio/transcriptions`)
 - Modèle NVIDIA Parakeet TDT 0.6B via `onnx_asr`
+- **Silero VAD** intégré pour une meilleure détection vocale
 - **File d'attente asynchrone** avec suivi de position
 - **Persistance SQLite** des transcriptions
 - **Lookup par user_uuid/message_id** pour éviter les re-transcriptions
 - **Fetch audio depuis URL** (Wazo, etc.)
+- **Diarization optionnelle** via pyannote (identification des locuteurs)
 - Support multi-format audio (WAV, MP3, FLAC, OGG, etc.)
 - Normalisation audio automatique
 - Conversion automatique (16kHz, mono)
@@ -85,6 +87,14 @@ curl http://localhost:8000/v1/audio/transcriptions/{job_id}
 curl http://localhost:8000/v1/audio/transcriptions/{job_id}/result
 ```
 
+### Transcrire un enregistrement d'appel (avec diarization)
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/recordings \
+  -F "file=@recording.wav" \
+  -F "diarize=true"
+```
+
 ## Documentation API
 
 Voir [API.md](API.md) pour la documentation complète de l'API.
@@ -100,6 +110,7 @@ Voir [API.md](API.md) pour la documentation complète de l'API.
 | `MAX_QUEUE_SIZE` | `100` | Taille max de la file d'attente |
 | `MAX_AUDIO_DURATION_SECS` | `480` | Durée max audio (8 min) |
 | `TEXT_RETENTION_DAYS` | `365` | Durée de rétention du texte (jours) |
+| `ENABLE_DIARIZATION` | `false` | Active le chargement de pyannote au démarrage |
 
 ## Volumes Docker
 
@@ -114,10 +125,34 @@ Voir [API.md](API.md) pour la documentation complète de l'API.
 - ~2GB RAM utilisée
 - Le modèle est téléchargé et mis en cache au premier lancement
 
+## Diarization (identification des locuteurs)
+
+Pour activer la diarization sur les enregistrements d'appels :
+
+1. Installer pyannote :
+```bash
+pip install pyannote.audio>=3.1.0
+```
+
+2. Activer dans l'environnement :
+```bash
+export ENABLE_DIARIZATION=true
+```
+
+3. Utiliser l'endpoint `/v1/audio/recordings` :
+```bash
+curl -X POST http://localhost:8000/v1/audio/recordings \
+  -F "file=@call.wav" \
+  -F "diarize=true"
+```
+
+La diarization utilise `pyannote/speaker-diarization-3.1` qui identifie automatiquement les différents locuteurs dans l'enregistrement.
+
 ## Stack technique
 
 - **Python 3.11** + FastAPI
-- **onnx_asr** pour la transcription (NVIDIA Parakeet)
+- **onnx_asr** pour la transcription (NVIDIA Parakeet + Silero VAD)
+- **pyannote** pour la diarization (optionnel)
 - **pydub** pour le traitement audio
 - **SQLite** pour la persistance
 - **Docker** pour le déploiement
