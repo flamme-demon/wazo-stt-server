@@ -22,14 +22,23 @@ RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pyt
 COPY main.py .
 
 # Create directories
-RUN mkdir -p /data /models
+RUN mkdir -p /data /models /models/vad
 
-# Pre-download the model using onnx_asr (caches to local directory)
+# Pre-download the ASR model using onnx_asr (caches to local directory)
 RUN python -c "import onnx_asr; onnx_asr.load_model('nemo-parakeet-tdt-0.6b-v3', '/models/parakeet')"
+
+# Pre-download the VAD model (download from Tinysoft/silero-vad-6.2 and rename to model.onnx)
+RUN python -c "import os; \
+    from huggingface_hub import hf_hub_download; \
+    vad_path = hf_hub_download('Tinysoft/silero-vad-6.2', 'silero_vad.onnx', local_dir='/models/vad'); \
+    os.rename(vad_path, '/models/vad/model.onnx') if os.path.exists(vad_path) else None" || \
+    echo "VAD download failed, will use default silero"
 
 # Environment variables
 ENV MODEL_NAME=nemo-parakeet-tdt-0.6b-v3
 ENV MODEL_PATH=/models/parakeet
+ENV VAD_MODEL=silero
+ENV VAD_PATH=/models/vad
 ENV DIARIZATION_MODEL=pyannote/speaker-diarization-community-1
 ENV HOST=0.0.0.0
 ENV PORT=8000

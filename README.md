@@ -104,6 +104,9 @@ Voir [API.md](API.md) pour la documentation complète de l'API.
 | Variable | Défaut | Description |
 |----------|--------|-------------|
 | `MODEL_NAME` | `nemo-parakeet-tdt-0.6b-v3` | Nom du modèle onnx_asr |
+| `MODEL_PATH` | `/models/parakeet` | Chemin du modèle ASR |
+| `VAD_MODEL` | `silero` | Modèle VAD: `silero` ou repo HuggingFace |
+| `VAD_PATH` | `/models/vad` | Chemin local du VAD (pour modèles personnalisés) |
 | `DB_PATH` | `/data/transcriptions.db` | Chemin de la base SQLite |
 | `HOST` | `0.0.0.0` | Adresse de bind |
 | `PORT` | `8000` | Port du serveur |
@@ -111,6 +114,7 @@ Voir [API.md](API.md) pour la documentation complète de l'API.
 | `MAX_AUDIO_DURATION_SECS` | `480` | Durée max audio (8 min) |
 | `TEXT_RETENTION_DAYS` | `365` | Durée de rétention du texte (jours) |
 | `ENABLE_DIARIZATION` | `false` | Active le chargement de pyannote au démarrage |
+| `ENABLE_VAD` | `true` | Active le VAD pour les longs fichiers audio |
 
 ## Volumes Docker
 
