@@ -29,6 +29,7 @@ from pydub.effects import normalize
 # Optional pyannote for diarization
 try:
     from pyannote.audio import Pipeline as DiarizationPipeline
+
     PYANNOTE_AVAILABLE = True
 except ImportError:
     PYANNOTE_AVAILABLE = False
@@ -36,9 +37,19 @@ except ImportError:
 
 # Configuration
 MODEL_NAME = os.getenv("MODEL_NAME", "nemo-parakeet-tdt-0.6b-v3")
-MODEL_PATH = os.getenv("MODEL_PATH", "/models/parakeet")  # Local path to downloaded model
+MODEL_PATH = os.getenv(
+    "MODEL_PATH", "/models/parakeet"
+)  # Local path to downloaded model
 HF_TOKEN = os.getenv("HF_TOKEN", "")  # HuggingFace token for pyannote models
-DIARIZATION_MODEL = os.getenv("DIARIZATION_MODEL", "pyannote/speaker-diarization-community-1")
+DIARIZATION_MODEL = os.getenv(
+    "DIARIZATION_MODEL", "pyannote/speaker-diarization-community-1"
+)
+VAD_MODEL = os.getenv(
+    "VAD_MODEL", "silero"
+)  # VAD model name: "silero" or HuggingFace repo like "onnx-community/silero-vad"
+VAD_PATH = os.getenv(
+    "VAD_PATH", ""
+)  # Local path to VAD model (optional, for custom VAD like silero-vad-6.2)
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
 DB_PATH = os.getenv("DB_PATH", "/data/transcriptions.db")
@@ -51,8 +62,7 @@ SAMPLE_RATE = 16000
 
 # Logging setup
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("wazo-stt-server")
 
@@ -113,8 +123,12 @@ def init_database(db_path: str):
             UNIQUE(user_uuid, message_id)
         )
     """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_message ON transcriptions(user_uuid, message_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_last_lookup ON transcriptions(last_lookup)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_user_message ON transcriptions(user_uuid, message_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_last_lookup ON transcriptions(last_lookup)"
+    )
 
     # Migration: add last_lookup column if it doesn't exist (for existing databases)
     try:
@@ -141,13 +155,15 @@ def cleanup_old_texts():
            WHERE text IS NOT NULL
            AND (last_lookup IS NULL OR last_lookup < ?)
            AND created_at < ?""",
-        (cutoff_time, cutoff_time)
+        (cutoff_time, cutoff_time),
     )
     cleaned = cursor.rowcount
     conn.commit()
     conn.close()
     if cleaned > 0:
-        logger.info(f"Cleaned up text from {cleaned} old transcriptions (not accessed in {TEXT_RETENTION_DAYS} days)")
+        logger.info(
+            f"Cleaned up text from {cleaned} old transcriptions (not accessed in {TEXT_RETENTION_DAYS} days)"
+        )
 
 
 def db_insert(job: Job):
@@ -156,7 +172,7 @@ def db_insert(job: Job):
     conn.execute(
         """INSERT INTO transcriptions (id, user_uuid, message_id, status, created_at)
            VALUES (?, ?, ?, ?, ?)""",
-        (job.id, job.user_uuid, job.message_id, job.status.value, job.created_at)
+        (job.id, job.user_uuid, job.message_id, job.status.value, job.created_at),
     )
     conn.commit()
     conn.close()
@@ -176,7 +192,7 @@ def db_update_completed(job_id: str, text: str, duration: float):
     conn.execute(
         """UPDATE transcriptions SET status = ?, text = ?, duration = ?, completed_at = ?
            WHERE id = ?""",
-        ("completed", text, duration, int(time.time()), job_id)
+        ("completed", text, duration, int(time.time()), job_id),
     )
     conn.commit()
     conn.close()
@@ -187,19 +203,21 @@ def db_update_failed(job_id: str, error: str):
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
         "UPDATE transcriptions SET status = ?, error = ? WHERE id = ?",
-        ("failed", error, job_id)
+        ("failed", error, job_id),
     )
     conn.commit()
     conn.close()
 
 
-def db_find_by_user_and_message(user_uuid: str, message_id: str, update_lookup: bool = True) -> Optional[dict]:
+def db_find_by_user_and_message(
+    user_uuid: str, message_id: str, update_lookup: bool = True
+) -> Optional[dict]:
     """Find transcription by user_uuid and message_id"""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.execute(
         "SELECT * FROM transcriptions WHERE user_uuid = ? AND message_id = ?",
-        (user_uuid, message_id)
+        (user_uuid, message_id),
     )
     row = cursor.fetchone()
 
@@ -207,7 +225,7 @@ def db_find_by_user_and_message(user_uuid: str, message_id: str, update_lookup: 
     if row and update_lookup:
         conn.execute(
             "UPDATE transcriptions SET last_lookup = ? WHERE user_uuid = ? AND message_id = ?",
-            (int(time.time()), user_uuid, message_id)
+            (int(time.time()), user_uuid, message_id),
         )
         conn.commit()
 
@@ -230,7 +248,7 @@ def db_delete_by_user_and_message(user_uuid: str, message_id: str) -> bool:
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.execute(
         "DELETE FROM transcriptions WHERE user_uuid = ? AND message_id = ?",
-        (user_uuid, message_id)
+        (user_uuid, message_id),
     )
     deleted = cursor.rowcount > 0
     conn.commit()
@@ -243,14 +261,23 @@ def db_get_stats() -> dict:
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.execute("SELECT COUNT(*) FROM transcriptions")
     total = cursor.fetchone()[0]
-    cursor = conn.execute("SELECT COUNT(*) FROM transcriptions WHERE status = 'completed'")
+    cursor = conn.execute(
+        "SELECT COUNT(*) FROM transcriptions WHERE status = 'completed'"
+    )
     completed = cursor.fetchone()[0]
     cursor = conn.execute("SELECT COUNT(*) FROM transcriptions WHERE status = 'failed'")
     failed = cursor.fetchone()[0]
-    cursor = conn.execute("SELECT COUNT(*) FROM transcriptions WHERE status IN ('queued', 'processing')")
+    cursor = conn.execute(
+        "SELECT COUNT(*) FROM transcriptions WHERE status IN ('queued', 'processing')"
+    )
     pending = cursor.fetchone()[0]
     conn.close()
-    return {"total": total, "completed": completed, "failed": failed, "pending": pending}
+    return {
+        "total": total,
+        "completed": completed,
+        "failed": failed,
+        "pending": pending,
+    }
 
 
 # Audio processing
@@ -272,7 +299,9 @@ def process_audio(audio_data: bytes, filename: str) -> tuple[AudioSegment, float
         # Load audio with pydub (handles format detection)
         audio = AudioSegment.from_file(temp_path)
 
-        logger.info(f"Audio loaded: {len(audio)}ms, {audio.frame_rate}Hz, {audio.channels} channels")
+        logger.info(
+            f"Audio loaded: {len(audio)}ms, {audio.frame_rate}Hz, {audio.channels} channels"
+        )
 
         # Normalize audio (like HuggingFace space does)
         audio = normalize(audio)
@@ -315,23 +344,27 @@ def transcribe_audio(audio: AudioSegment) -> TranscriptionResult:
             iter_result = iter([result])
 
         for seg in iter_result:
-            if hasattr(seg, 'text'):
+            if hasattr(seg, "text"):
                 all_text.append(seg.text)
-                segments.append({
-                    "id": len(segments),
-                    "start": seg.start if hasattr(seg, 'start') else 0,
-                    "end": seg.end if hasattr(seg, 'end') else 0,
-                    "text": seg.text
-                })
-            elif hasattr(seg, 'segments') and seg.segments:
-                for s in seg.segments:
-                    all_text.append(s.text if hasattr(s, 'text') else str(s))
-                    segments.append({
+                segments.append(
+                    {
                         "id": len(segments),
-                        "start": s.start if hasattr(s, 'start') else 0,
-                        "end": s.end if hasattr(s, 'end') else 0,
-                        "text": s.text if hasattr(s, 'text') else str(s)
-                    })
+                        "start": seg.start if hasattr(seg, "start") else 0,
+                        "end": seg.end if hasattr(seg, "end") else 0,
+                        "text": seg.text,
+                    }
+                )
+            elif hasattr(seg, "segments") and seg.segments:
+                for s in seg.segments:
+                    all_text.append(s.text if hasattr(s, "text") else str(s))
+                    segments.append(
+                        {
+                            "id": len(segments),
+                            "start": s.start if hasattr(s, "start") else 0,
+                            "end": s.end if hasattr(s, "end") else 0,
+                            "text": s.text if hasattr(s, "text") else str(s),
+                        }
+                    )
 
         text = " ".join(all_text)
         duration = segments[-1]["end"] if segments else len(audio) / 1000.0
@@ -359,37 +392,36 @@ def diarize_audio(audio_path: str, exclusive: bool = True) -> list[dict]:
         speakers = []
 
         # pyannote.audio 4.x (community-1): DiarizeOutput with .speaker_diarization
-        if hasattr(output, 'speaker_diarization'):
+        if hasattr(output, "speaker_diarization"):
             # Use exclusive mode for better STT alignment (one speaker at a time)
-            if exclusive and hasattr(output, 'exclusive_speaker_diarization'):
+            if exclusive and hasattr(output, "exclusive_speaker_diarization"):
                 diarization = output.exclusive_speaker_diarization
             else:
                 diarization = output.speaker_diarization
 
             for turn, speaker in diarization:
-                speakers.append({
-                    "speaker": speaker,
-                    "start": turn.start,
-                    "end": turn.end
-                })
+                speakers.append(
+                    {"speaker": speaker, "start": turn.start, "end": turn.end}
+                )
 
         # pyannote.audio 3.x fallback: direct Annotation object
-        elif hasattr(output, 'itertracks'):
+        elif hasattr(output, "itertracks"):
             for turn, _, speaker in output.itertracks(yield_label=True):
-                speakers.append({
-                    "speaker": speaker,
-                    "start": turn.start,
-                    "end": turn.end
-                })
+                speakers.append(
+                    {"speaker": speaker, "start": turn.start, "end": turn.end}
+                )
 
         else:
-            attrs = [a for a in dir(output) if not a.startswith('_')]
-            logger.warning(f"Unknown diarization output type: {type(output)}, attrs: {attrs}")
+            attrs = [a for a in dir(output) if not a.startswith("_")]
+            logger.warning(
+                f"Unknown diarization output type: {type(output)}, attrs: {attrs}"
+            )
 
         return speakers
     except Exception as e:
         logger.warning(f"Diarization failed: {e}")
         import traceback
+
         logger.debug(f"Diarization traceback: {traceback.format_exc()}")
         return []
 
@@ -411,7 +443,9 @@ async def fetch_audio_from_url(url: str) -> tuple[bytes, str]:
             if "/" in url_path:
                 filename = url_path.split("/")[-1] or "audio.wav"
 
-        logger.info(f"Fetched {len(response.content)} bytes from URL, filename: {filename}")
+        logger.info(
+            f"Fetched {len(response.content)} bytes from URL, filename: {filename}"
+        )
         return response.content, filename
 
 
@@ -425,11 +459,21 @@ async def job_worker():
     try:
         # Load model with CPU provider and timestamps
         logger.info(f"Loading model {MODEL_NAME} from: {MODEL_PATH}")
-        base_model = onnx_asr.load_model(MODEL_NAME, MODEL_PATH, providers=["CPUExecutionProvider"])
+        base_model = onnx_asr.load_model(
+            MODEL_NAME, MODEL_PATH, providers=["CPUExecutionProvider"]
+        )
         if ENABLE_VAD:
-            vad = onnx_asr.load_vad("silero")
+            # Load VAD model - supports custom path for models like silero-vad-6.2
+            # Note: For custom VAD models, ensure the ONNX file is named 'model.onnx'
+            # e.g., download from Tinysoft/silero-vad-6.2 and rename silero_vad.onnx -> model.onnx
+            if VAD_PATH:
+                logger.info(f"Loading VAD model from local path: {VAD_PATH}")
+                vad = onnx_asr.load_vad("silero", VAD_PATH)
+            else:
+                logger.info(f"Loading VAD model: {VAD_MODEL}")
+                vad = onnx_asr.load_vad(VAD_MODEL)
             model = base_model.with_vad(vad).with_timestamps()
-            logger.info(f"Model {MODEL_NAME} loaded with Silero VAD")
+            logger.info(f"Model {MODEL_NAME} loaded with VAD")
         else:
             model = base_model.with_timestamps()
             logger.info(f"Model {MODEL_NAME} loaded without VAD")
@@ -444,8 +488,7 @@ async def job_worker():
                 logger.info(f"Loading diarization pipeline: {DIARIZATION_MODEL}")
                 token = HF_TOKEN if HF_TOKEN else None
                 diarization_pipeline = DiarizationPipeline.from_pretrained(
-                    DIARIZATION_MODEL,
-                    token=token
+                    DIARIZATION_MODEL, token=token
                 )
                 logger.info(f"Diarization pipeline loaded: {DIARIZATION_MODEL}")
             except Exception as e:
@@ -491,8 +534,8 @@ async def job_worker():
             # Check duration limit
             if duration > MAX_AUDIO_DURATION_SECS:
                 raise ValueError(
-                    f"Audio too long: {duration/60:.1f} minutes. "
-                    f"Maximum allowed: {MAX_AUDIO_DURATION_SECS/60:.0f} minutes."
+                    f"Audio too long: {duration / 60:.1f} minutes. "
+                    f"Maximum allowed: {MAX_AUDIO_DURATION_SECS / 60:.0f} minutes."
                 )
 
             # Transcribe
@@ -548,7 +591,7 @@ app = FastAPI(
     title="Wazo STT Server",
     description="OpenAI Whisper API compatible Speech-to-Text server using NVIDIA Parakeet",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -570,7 +613,7 @@ async def health_check():
         "model": MODEL_NAME,
         "version": "1.0.0",
         "queue_length": len(job_queue),
-        "db_stats": stats
+        "db_stats": stats,
     }
 
 
@@ -584,15 +627,15 @@ async def list_models():
                 "id": "parakeet-tdt",
                 "object": "model",
                 "created": 1699000000,
-                "owned_by": "nvidia"
+                "owned_by": "nvidia",
             },
             {
                 "id": "whisper-1",
                 "object": "model",
                 "created": 1699000000,
-                "owned_by": "openai"
-            }
-        ]
+                "owned_by": "openai",
+            },
+        ],
     }
 
 
@@ -603,12 +646,14 @@ async def queue_status():
     return {
         "queue_length": len(job_queue),
         "processing": processing,
-        "max_queue_size": MAX_QUEUE_SIZE
+        "max_queue_size": MAX_QUEUE_SIZE,
     }
 
 
 @app.get("/v1/audio/transcriptions/lookup")
-async def lookup_transcription(user_uuid: str = Query(...), message_id: str = Query(...)):
+async def lookup_transcription(
+    user_uuid: str = Query(...), message_id: str = Query(...)
+):
     """Lookup existing transcription by user_uuid and message_id"""
     record = db_find_by_user_and_message(user_uuid, message_id)
 
@@ -620,7 +665,7 @@ async def lookup_transcription(user_uuid: str = Query(...), message_id: str = Qu
             "text": record["text"],
             "duration": record["duration"],
             "error": record["error"],
-            "created_at": record["created_at"]
+            "created_at": record["created_at"],
         }
 
     return {"found": False}
@@ -646,19 +691,23 @@ async def submit_transcription(
     existing = db_find_by_user_and_message(user_uuid, message_id)
     if existing:
         if force_retranscribe:
-            logger.info(f"Force re-transcription requested for user={user_uuid}, message={message_id}")
+            logger.info(
+                f"Force re-transcription requested for user={user_uuid}, message={message_id}"
+            )
             db_delete_by_user_and_message(user_uuid, message_id)
             # Also remove from in-memory if present
             for job_id, job in list(jobs.items()):
                 if job.user_uuid == user_uuid and job.message_id == message_id:
                     del jobs[job_id]
         else:
-            logger.info(f"Found existing transcription for user={user_uuid}, message={message_id}")
+            logger.info(
+                f"Found existing transcription for user={user_uuid}, message={message_id}"
+            )
             return {
                 "job_id": existing["id"],
                 "status": existing["status"],
                 "message": "Transcription already exists",
-                "cached": True
+                "cached": True,
             }
 
     # Get audio data
@@ -671,7 +720,9 @@ async def submit_transcription(
         try:
             audio_data, filename = await fetch_audio_from_url(url)
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to fetch audio from URL: {e}")
+            raise HTTPException(
+                status_code=400, detail=f"Failed to fetch audio from URL: {e}"
+            )
     else:
         raise HTTPException(status_code=400, detail="No audio file or URL provided")
 
@@ -679,10 +730,12 @@ async def submit_transcription(
     if len(job_queue) >= MAX_QUEUE_SIZE:
         raise HTTPException(
             status_code=429,
-            detail=f"Queue is full ({MAX_QUEUE_SIZE} jobs). Please try again later."
+            detail=f"Queue is full ({MAX_QUEUE_SIZE} jobs). Please try again later.",
         )
 
-    logger.info(f"Received transcription request: user={user_uuid}, message={message_id}, filename={filename}, size={len(audio_data)} bytes")
+    logger.info(
+        f"Received transcription request: user={user_uuid}, message={message_id}, filename={filename}, size={len(audio_data)} bytes"
+    )
 
     # Save audio to temp file
     suffix = Path(filename).suffix if filename else ".wav"
@@ -701,7 +754,7 @@ async def submit_transcription(
         message_id=message_id,
         status=JobStatus.QUEUED,
         audio_path=audio_path,
-        created_at=int(time.time())
+        created_at=int(time.time()),
     )
 
     # Insert into database
@@ -723,7 +776,7 @@ async def submit_transcription(
         "status": "queued",
         "queue_position": job.queue_position,
         "message": f"Job queued. Position in queue: {job.queue_position}",
-        "cached": False
+        "cached": False,
     }
 
 
@@ -742,7 +795,7 @@ async def get_job_status(job_id: str):
             "text": job.result.text if job.result else None,
             "duration": job.result.duration if job.result else None,
             "error": job.error,
-            "created_at": job.created_at
+            "created_at": job.created_at,
         }
 
     # Fall back to database
@@ -757,7 +810,7 @@ async def get_job_status(job_id: str):
             "text": record["text"],
             "duration": record["duration"],
             "error": record["error"],
-            "created_at": record["created_at"]
+            "created_at": record["created_at"],
         }
 
     raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
@@ -799,14 +852,14 @@ async def get_job_result(job_id: str, response_format: str = Query(default="json
                 "language": "en",
                 "duration": duration or 0,
                 "text": text or "",
-                "segments": segments
+                "segments": segments,
             }
         elif response_format == "srt":
             srt = ""
             for i, seg in enumerate(segments):
                 start = format_srt_time(seg.get("start", 0))
                 end = format_srt_time(seg.get("end", 0))
-                srt += f"{i+1}\n{start} --> {end}\n{seg.get('text', '')}\n\n"
+                srt += f"{i + 1}\n{start} --> {end}\n{seg.get('text', '')}\n\n"
             return PlainTextResponse(srt, media_type="text/plain")
         elif response_format == "vtt":
             vtt = "WEBVTT\n\n"
@@ -823,8 +876,14 @@ async def get_job_result(job_id: str, response_format: str = Query(default="json
 
     elif status in (JobStatus.QUEUED, JobStatus.PROCESSING):
         queue_pos = job.queue_position if job else None
-        msg = f"Job is still queued at position {queue_pos}" if queue_pos else "Job is still processing"
-        return JSONResponse(status_code=202, content={"status": status.value, "message": msg})
+        msg = (
+            f"Job is still queued at position {queue_pos}"
+            if queue_pos
+            else "Job is still processing"
+        )
+        return JSONResponse(
+            status_code=202, content={"status": status.value, "message": msg}
+        )
 
     raise HTTPException(status_code=500, detail="Unknown job status")
 
@@ -864,7 +923,7 @@ async def diarize_recording(
         if duration > MAX_AUDIO_DURATION_SECS:
             raise HTTPException(
                 status_code=400,
-                detail=f"Audio too long: {duration/60:.1f} min. Max: {MAX_AUDIO_DURATION_SECS/60:.0f} min."
+                detail=f"Audio too long: {duration / 60:.1f} min. Max: {MAX_AUDIO_DURATION_SECS / 60:.0f} min.",
             )
 
         # Save processed audio for diarization
@@ -876,7 +935,9 @@ async def diarize_recording(
             logger.info("Performing speaker diarization...")
             speakers = diarize_audio(temp_path)
             unique_speakers = sorted(set(s["speaker"] for s in speakers))
-            logger.info(f"Diarization complete: {len(unique_speakers)} speakers, {len(speakers)} segments")
+            logger.info(
+                f"Diarization complete: {len(unique_speakers)} speakers, {len(speakers)} segments"
+            )
         finally:
             os.unlink(temp_path)
 
@@ -886,7 +947,7 @@ async def diarize_recording(
                 {"speaker": s["speaker"], "start": s["start"], "end": s["end"]}
                 for s in speakers
             ],
-            "duration": duration
+            "duration": duration,
         }
 
     except HTTPException:
@@ -901,7 +962,7 @@ async def recording_status():
     """Get diarization endpoint status"""
     return {
         "available": diarization_pipeline is not None,
-        "diarization_model": DIARIZATION_MODEL if diarization_pipeline else None
+        "diarization_model": DIARIZATION_MODEL if diarization_pipeline else None,
     }
 
 
@@ -925,4 +986,5 @@ def format_vtt_time(seconds: float) -> str:
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host=HOST, port=PORT)
